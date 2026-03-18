@@ -37,3 +37,28 @@ export {
   computeNfd,
   computeNfdKm,
 } from "./nfd/calculator";
+
+export type {
+  GeoPoint,
+  ElevationProvider,
+  RouteProfilePoint,
+  CourseGradientBuildOptions,
+  CourseGradientResult,
+  NfdFromWaypointsResult,
+  CachedElevationProviderOptions,
+  GsiDemTileElevationProviderOptions,
+} from "./course-gradient/analyzer";
+
+export {
+  haversineDistanceMeters,
+  smoothElevations,
+  parseGsiDemTextTile,
+  buildCourseSectionsFromWaypoints,
+  computeNfdFromWaypoints,
+  CachedElevationProvider,
+  DEFAULT_GSI_ELEVATION_ENDPOINT,
+  DEFAULT_GSI_DEM_TILE_TEMPLATE,
+  DEFAULT_GSI_DEM_TILE_TEMPLATES,
+  GsiDemTileElevationProvider,
+  GsiElevationProvider,
+} from "./course-gradient/analyzer";

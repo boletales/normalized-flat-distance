@@ -47,4 +47,14 @@ console.log(`NFD: ${nfd.toFixed(2)} km`);
 npm install
 npm test   # テスト実行
 npm run build  # TypeScript コンパイル
+
+# ブラウザ上パイロットツール（OSMルート作成 + 標高/勾配/NFD可視化）
+npm run pilot
 ```
+
+`npm run pilot` 実行後、表示されたローカルURLをブラウザで開くと、以下を確認できます。
+
+- OSM地図上でのルート構成
+- DEMタイル取得による各点標高の算出
+- 勾配・標高グラフ表示
+- グラフのホバー位置に対応する地図上の地点表示

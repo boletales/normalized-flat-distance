@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "test": "jest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "pilot": "vite --config pilot-ui/vite.config.ts",
+    "pilot:build": "vite build --config pilot-ui/vite.config.ts"
   },
   "repository": {
     "type": "git",
@@ -27,9 +29,13 @@
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^25.5.0",
+    "chart.js": "^4.5.1",
     "jest": "^30.3.0",
+    "leaflet": "^1.9.4",
+    "leaflet-routing-machine": "^3.2.12",
     "ts-jest": "^29.4.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^7.1.5"
   },
   "jest": {
     "preset": "ts-jest",
