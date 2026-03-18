@@ -8,6 +8,7 @@
     "sourceMap": true,
     "declaration": true,
     "declarationMap": true,
+    "isolatedModules": true,
     "noUncheckedIndexedAccess": true,
     "strict": true,
     "esModuleInterop": true,

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NFD Pilot Viewer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="panel">
+        <h1>NFD Pilot Viewer</h1>
+        <p class="muted">地図上でルートを作成し、標高・勾配・NFDを確認します。</p>
+
+        <label>
+          サイクリストレベル
+          <select id="levelSelect">
+            <option value="beginner">beginner</option>
+            <option value="intermediate" selected>intermediate</option>
+            <option value="advanced">advanced</option>
+            <option value="pro">pro</option>
+          </select>
+        </label>
+
+        <label>
+          平滑化ウィンドウ
+          <input id="smoothingWindow" type="number" value="5" min="1" max="31" step="2" />
+        </label>
+
+        <label>
+          最小セクション距離 [m]
+          <input id="minimumDistance" type="number" value="5" min="1" max="100" />
+        </label>
+
+        <label>
+          最大勾配クリップ [%]
+          <input id="maxAbsGrade" type="number" value="30" min="5" max="60" />
+        </label>
+
+        <div class="buttons">
+          <button id="analyzeButton">解析</button>
+          <button id="clearButton" class="secondary">ルートクリア</button>
+        </div>
+
+        <div id="summary" class="summary">ルートを作成して「解析」を押してください。</div>
+        <div id="error" class="error"></div>
+
+        <details>
+          <summary>使い方</summary>
+          <ol>
+            <li>地図上の点は S=スタート、G=ゴール、数字=経由点</li>
+            <li>地図クリックで「ゴール手前」に経由点を追加</li>
+            <li>経由点は右クリック/ダブルクリック/ポップアップボタンで削除</li>
+            <li>解析ボタンで標高・勾配グラフとNFDを確認</li>
+            <li>グラフにマウスオーバーすると地図上に対応地点を表示</li>
+          </ol>
+        </details>
+      </aside>
+
+      <main class="main">
+        <div id="map"></div>
+        <div class="charts">
+          <canvas id="profileChart"></canvas>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
