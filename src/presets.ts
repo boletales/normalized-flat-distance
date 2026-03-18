@@ -18,6 +18,7 @@
  *   Beginner:     2.0 W/kg → 120 W
  *   Intermediate: 3.0 W/kg → 180 W
  *   Advanced:     4.0 W/kg → 240 W
+ *   Pro:          5.0 W/kg → 300 W
  *
  * Cruise power: 65% of FTP (mid-point of 60–70% range stated in the spec).
  *
@@ -54,5 +55,9 @@ export const CYCLIST_PRESETS: Record<CyclistLevel, CyclistParams> = {
   advanced: {
     ...BASE_PARAMS,
     ftp: 4.0 * BODY_MASS,  // 4.0 W/kg × body mass → 240 W
+  },
+  pro: {
+    ...BASE_PARAMS,
+    ftp: 5.0 * BODY_MASS,  // 5.0 W/kg × body mass → 300 W
   },
 };
