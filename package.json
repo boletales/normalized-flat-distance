@@ -1,0 +1,36 @@
+{
+  "name": "normalized-flat-distance",
+  "version": "0.1.0",
+  "description": "サイクリングコースの加法的な難易度指標 Normalized Flat Distance (NFD) を開発実装する。",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boletales/normalized-flat-distance.git"
+  },
+  "keywords": ["cycling", "normalized-flat-distance", "NFD"],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/boletales/normalized-flat-distance/issues"
+  },
+  "homepage": "https://github.com/boletales/normalized-flat-distance#readme",
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.5.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.9.3"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "roots": ["<rootDir>/src"],
+    "testMatch": ["**/__tests__/**/*.ts", "**/*.test.ts"]
+  }
+}
