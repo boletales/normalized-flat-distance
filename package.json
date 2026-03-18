@@ -13,7 +13,11 @@
     "type": "git",
     "url": "git+https://github.com/boletales/normalized-flat-distance.git"
   },
-  "keywords": ["cycling", "normalized-flat-distance", "NFD"],
+  "keywords": [
+    "cycling",
+    "normalized-flat-distance",
+    "NFD"
+  ],
   "author": "",
   "license": "ISC",
   "bugs": {
@@ -30,7 +34,12 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "roots": ["<rootDir>/src"],
-    "testMatch": ["**/__tests__/**/*.ts", "**/*.test.ts"]
+    "roots": [
+      "<rootDir>/src"
+    ],
+    "testMatch": [
+      "**/__tests__/**/*.ts",
+      "**/*.test.ts"
+    ]
   }
 }

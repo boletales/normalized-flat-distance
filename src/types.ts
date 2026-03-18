@@ -34,7 +34,7 @@ export interface CyclistParams {
 }
 
 /** Cyclist level presets */
-export type CyclistLevel = "beginner" | "intermediate" | "advanced";
+export type CyclistLevel = "beginner" | "intermediate" | "advanced" | "pro";
 
 /**
  * A section of a cycling course: horizontal distance and gradient.
