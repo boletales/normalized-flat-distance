@@ -5,6 +5,13 @@ import { computeNfd, computeNfdKm } from "../nfd/calculator";
 export interface GeoPoint {
   lat: number;
   lon: number;
+  /**
+   * If true, DEM elevation at this point is ignored and replaced by
+   * linear interpolation between non-masked endpoints.
+   *
+   * Intended for tunnel/bridge sections where surface DEM is not suitable.
+   */
+  interpolateElevation?: boolean;
 }
 
 /** Elevation source abstraction. */
@@ -14,18 +21,33 @@ export interface ElevationProvider {
 
 /** One sampled point on an analyzed route profile. */
 export interface RouteProfilePoint extends GeoPoint {
-  /** Elevation returned by provider (m) */
+  /** Raw elevation for display/debug (m). Tunnel/bridge masked points are interpolated. */
   rawElevation: number;
+  /** Raw DEM elevation returned by provider before interpolation (m). */
+  demElevation?: number;
   /** Smoothed elevation used for grade computation (m) */
   elevation: number;
   /** Cumulative horizontal distance from route start (m) */
   distanceFromStart: number;
+  /** Elevation source used for this point */
+  elevationSource: "dem" | "interpolated";
 }
 
 /** Options for route grade analysis. */
 export interface CourseGradientBuildOptions {
+  /**
+   * Distance-based smoothing half-window in meters.
+   * If set (> 0), this takes precedence over `smoothingWindow`.
+   */
+  smoothingDistanceMeters?: number;
   /** Moving-average window size for elevation smoothing. 1 disables smoothing. */
   smoothingWindow?: number;
+  /**
+   * Section length for grade computation (m).
+   * Sections are created at fixed distance intervals independent of source
+   * waypoint/OSM boundaries.
+   */
+  sectionLengthMeters?: number;
   /** Segments shorter than this are merged for grade estimation (m). */
   minimumDistance?: number;
   /** Clamp absolute grade (%) to suppress extreme spikes from noisy data. */
@@ -92,8 +114,238 @@ export function smoothElevations(
   });
 }
 
+function median(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    const left = sorted[mid - 1] as number;
+    const right = sorted[mid] as number;
+    return (left + right) / 2;
+  }
+  return sorted[mid] as number;
+}
+
+/**
+ * Smooth elevations in distance-elevation domain.
+ *
+ * The smoothing window is converted to a metric radius using median point
+ * spacing, then centered averaging is applied with distance-based neighbors.
+ */
+export function smoothElevationsByDistance(
+  elevations: number[],
+  distancesFromStart: number[],
+  windowSize = 5,
+): number[] {
+  if (
+    windowSize <= 1
+    || elevations.length <= 2
+    || elevations.length !== distancesFromStart.length
+  ) {
+    return [...elevations];
+  }
+
+  const positiveSteps: number[] = [];
+  for (let i = 1; i < distancesFromStart.length; i += 1) {
+    const prev = distancesFromStart[i - 1];
+    const curr = distancesFromStart[i];
+    if (prev === undefined || curr === undefined) {
+      continue;
+    }
+    const step = curr - prev;
+    if (step > 0) {
+      positiveSteps.push(step);
+    }
+  }
+
+  const medianStep = median(positiveSteps);
+  if (!Number.isFinite(medianStep) || medianStep <= 0) {
+    return smoothElevations(elevations, windowSize);
+  }
+
+  const normalizedWindow = windowSize % 2 === 0 ? windowSize + 1 : windowSize;
+  const halfWindowMeters = (normalizedWindow * medianStep) / 2;
+
+  return elevations.map((_, index) => {
+    const centerDistance = distancesFromStart[index];
+    if (typeof centerDistance !== "number" || !Number.isFinite(centerDistance)) {
+      return elevations[index] as number;
+    }
+
+    let sum = 0;
+    let count = 0;
+    for (let j = 0; j < elevations.length; j += 1) {
+      const d = distancesFromStart[j];
+      const e = elevations[j];
+      if (
+        typeof d !== "number"
+        || typeof e !== "number"
+        || !Number.isFinite(d)
+        || !Number.isFinite(e)
+      ) {
+        continue;
+      }
+      if (Math.abs(d - centerDistance) <= halfWindowMeters) {
+        sum += e;
+        count += 1;
+      }
+    }
+
+    if (count === 0) {
+      return elevations[index] as number;
+    }
+    return sum / count;
+  });
+}
+
+/**
+ * Smooth elevations in distance-elevation domain with explicit metric radius.
+ */
+export function smoothElevationsByDistanceMeters(
+  elevations: number[],
+  distancesFromStart: number[],
+  halfWindowMeters = 30,
+): number[] {
+  if (
+    halfWindowMeters <= 0
+    || elevations.length <= 2
+    || elevations.length !== distancesFromStart.length
+  ) {
+    return [...elevations];
+  }
+
+  return elevations.map((_, index) => {
+    const centerDistance = distancesFromStart[index];
+    if (typeof centerDistance !== "number" || !Number.isFinite(centerDistance)) {
+      return elevations[index] as number;
+    }
+
+    let sum = 0;
+    let count = 0;
+    for (let j = 0; j < elevations.length; j += 1) {
+      const d = distancesFromStart[j];
+      const e = elevations[j];
+      if (
+        typeof d !== "number"
+        || typeof e !== "number"
+        || !Number.isFinite(d)
+        || !Number.isFinite(e)
+      ) {
+        continue;
+      }
+      if (Math.abs(d - centerDistance) <= halfWindowMeters) {
+        sum += e;
+        count += 1;
+      }
+    }
+
+    if (count === 0) {
+      return elevations[index] as number;
+    }
+    return sum / count;
+  });
+}
+
+/**
+ * Apply linear interpolation for masked points using nearest unmasked
+ * endpoints on both sides.
+ */
+export function interpolateMaskedElevations(
+  elevations: number[],
+  mask: boolean[],
+): { elevations: number[]; interpolatedMask: boolean[] } {
+  const n = elevations.length;
+  const result = [...elevations];
+  const interpolatedMask = new Array<boolean>(n).fill(false);
+
+  let i = 0;
+  while (i < n) {
+    if (!mask[i]) {
+      i += 1;
+      continue;
+    }
+
+    const start = i;
+    while (i < n && mask[i]) {
+      i += 1;
+    }
+    const end = i - 1;
+
+    const left = start - 1;
+    const right = i;
+
+    if (left < 0 || right >= n) {
+      // cannot interpolate without both endpoints
+      continue;
+    }
+
+    const leftValue = result[left];
+    const rightValue = result[right];
+    if (
+      typeof leftValue !== "number"
+      || typeof rightValue !== "number"
+      || !Number.isFinite(leftValue)
+      || !Number.isFinite(rightValue)
+    ) {
+      continue;
+    }
+
+    const span = right - left;
+    for (let j = start; j <= end; j += 1) {
+      const t = (j - left) / span;
+      result[j] = leftValue + t * (rightValue - leftValue);
+      interpolatedMask[j] = true;
+    }
+  }
+
+  return { elevations: result, interpolatedMask };
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function elevationAtDistance(profile: RouteProfilePoint[], distance: number): number {
+  if (profile.length === 0) {
+    return 0;
+  }
+
+  const first = profile[0];
+  if (!first) {
+    return 0;
+  }
+  if (distance <= 0) {
+    return first.elevation;
+  }
+
+  const last = profile[profile.length - 1];
+  if (!last) {
+    return first.elevation;
+  }
+  if (distance >= last.distanceFromStart) {
+    return last.elevation;
+  }
+
+  for (let i = 1; i < profile.length; i += 1) {
+    const prev = profile[i - 1];
+    const curr = profile[i];
+    if (!prev || !curr) {
+      continue;
+    }
+
+    if (distance <= curr.distanceFromStart) {
+      const span = curr.distanceFromStart - prev.distanceFromStart;
+      if (span <= 0) {
+        return curr.elevation;
+      }
+      const t = (distance - prev.distanceFromStart) / span;
+      return prev.elevation + t * (curr.elevation - prev.elevation);
+    }
+  }
+
+  return last.elevation;
 }
 
 /**
@@ -109,13 +361,53 @@ export async function buildCourseSectionsFromWaypoints(
   }
 
   const smoothingWindow = options.smoothingWindow ?? 5;
-  const minimumDistance = options.minimumDistance ?? 5;
+  const smoothingDistanceMeters = options.smoothingDistanceMeters;
+  const sectionLengthMeters = options.sectionLengthMeters
+    ?? options.minimumDistance
+    ?? 100;
   const maxAbsGrade = options.maxAbsGrade ?? 30;
+
+  const distancesFromStart = new Array<number>(waypoints.length).fill(0);
+  let cumulativeDistance = 0;
+  for (let i = 1; i < waypoints.length; i += 1) {
+    const prev = waypoints[i - 1];
+    const curr = waypoints[i];
+    if (prev === undefined || curr === undefined) {
+      continue;
+    }
+    cumulativeDistance += haversineDistanceMeters(prev, curr);
+    distancesFromStart[i] = cumulativeDistance;
+  }
 
   const rawElevations = await Promise.all(
     waypoints.map((point) => elevationProvider.getElevation(point)),
   );
-  const smoothedElevations = smoothElevations(rawElevations, smoothingWindow);
+
+  const interpolationMask = waypoints.map((point) => point.interpolateElevation === true);
+  const {
+    elevations: interpolatedRawElevations,
+    interpolatedMask,
+  } = interpolateMaskedElevations(rawElevations, interpolationMask);
+
+  const smoothedElevations = (
+    typeof smoothingDistanceMeters === "number"
+    && Number.isFinite(smoothingDistanceMeters)
+    && smoothingDistanceMeters > 0
+  )
+    ? smoothElevationsByDistanceMeters(
+      interpolatedRawElevations,
+      distancesFromStart,
+      smoothingDistanceMeters,
+    )
+    : smoothElevationsByDistance(
+      interpolatedRawElevations,
+      distancesFromStart,
+      smoothingWindow,
+    );
+
+  const {
+    elevations: adjustedElevations,
+  } = interpolateMaskedElevations(smoothedElevations, interpolationMask);
 
   const profile: RouteProfilePoint[] = [];
   let cumulative = 0;
@@ -133,9 +425,11 @@ export async function buildCourseSectionsFromWaypoints(
 
   profile.push({
     ...firstWaypoint,
-    rawElevation: firstRawElevation,
-    elevation: firstSmoothedElevation,
+    rawElevation: interpolatedRawElevations[0] as number,
+    demElevation: firstRawElevation,
+    elevation: adjustedElevations[0] as number,
     distanceFromStart: 0,
+    elevationSource: interpolatedMask[0] ? "interpolated" : "dem",
   });
 
   for (let i = 1; i < waypoints.length; i += 1) {
@@ -143,11 +437,13 @@ export async function buildCourseSectionsFromWaypoints(
     const currentWaypoint = waypoints[i];
     const rawElevation = rawElevations[i];
     const smoothedElevation = smoothedElevations[i];
+    const adjustedElevation = adjustedElevations[i];
     if (
       previousWaypoint === undefined
       || currentWaypoint === undefined
       || rawElevation === undefined
       || smoothedElevation === undefined
+      || adjustedElevation === undefined
     ) {
       continue;
     }
@@ -157,56 +453,35 @@ export async function buildCourseSectionsFromWaypoints(
 
     profile.push({
       ...currentWaypoint,
-      rawElevation,
-      elevation: smoothedElevation,
+      rawElevation: interpolatedRawElevations[i] as number,
+      demElevation: rawElevation,
+      elevation: adjustedElevation,
       distanceFromStart: cumulative,
+      elevationSource: interpolatedMask[i] ? "interpolated" : "dem",
     });
   }
 
   const sections: CourseSection[] = [];
-  let mergedDistance = 0;
-  let mergedDeltaElevation = 0;
+  const totalDistance = profile[profile.length - 1]?.distanceFromStart ?? 0;
+  const normalizedSectionLength = Number.isFinite(sectionLengthMeters) && sectionLengthMeters > 0
+    ? sectionLengthMeters
+    : 100;
 
-  for (let i = 1; i < profile.length; i += 1) {
-    const previousPoint = profile[i - 1];
-    const currentPoint = profile[i];
-    if (previousPoint === undefined || currentPoint === undefined) {
-      continue;
+  let sectionStart = 0;
+  while (sectionStart < totalDistance) {
+    const sectionEnd = Math.min(totalDistance, sectionStart + normalizedSectionLength);
+    const distance = sectionEnd - sectionStart;
+    if (distance <= 0) {
+      break;
     }
 
-    const segmentDistance = currentPoint.distanceFromStart - previousPoint.distanceFromStart;
-    if (segmentDistance <= 0) {
-      continue;
-    }
-
-    const deltaElevation = currentPoint.elevation - previousPoint.elevation;
-    mergedDistance += segmentDistance;
-    mergedDeltaElevation += deltaElevation;
-
-    if (mergedDistance < minimumDistance) {
-      continue;
-    }
-
-    const rawGrade = (mergedDeltaElevation / mergedDistance) * 100;
+    const startElevation = elevationAtDistance(profile, sectionStart);
+    const endElevation = elevationAtDistance(profile, sectionEnd);
+    const rawGrade = ((endElevation - startElevation) / distance) * 100;
     const grade = clamp(rawGrade, -maxAbsGrade, maxAbsGrade);
 
-    sections.push({
-      distance: mergedDistance,
-      grade,
-    });
-
-    mergedDistance = 0;
-    mergedDeltaElevation = 0;
-  }
-
-  if (mergedDistance > 0) {
-    const rawGrade = (mergedDeltaElevation / mergedDistance) * 100;
-    const grade = clamp(rawGrade, -maxAbsGrade, maxAbsGrade);
-
-    sections.push({
-      distance: mergedDistance,
-      grade,
-    });
+    sections.push({ distance, grade });
+    sectionStart = sectionEnd;
   }
 
   return { profile, sections };

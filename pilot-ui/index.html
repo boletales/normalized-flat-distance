@@ -23,13 +23,13 @@
         </label>
 
         <label>
-          平滑化ウィンドウ
-          <input id="smoothingWindow" type="number" value="5" min="1" max="31" step="2" />
+          平滑化距離 [m]
+          <input id="smoothingDistance" type="number" value="30" min="0" max="500" step="5" />
         </label>
 
         <label>
-          最小セクション距離 [m]
-          <input id="minimumDistance" type="number" value="5" min="1" max="100" />
+          セクション長 [m]
+          <input id="sectionLength" type="number" value="100" min="10" max="1000" step="10" />
         </label>
 
         <label>
@@ -40,18 +40,25 @@
         <div class="buttons">
           <button id="analyzeButton">解析</button>
           <button id="clearButton" class="secondary">ルートクリア</button>
+          <button id="exportButton" class="secondary">標高データCSV出力</button>
+          <button id="exportInterpolationButton" class="secondary">内挿デバッグCSV出力</button>
         </div>
 
-        <div id="summary" class="summary">ルートを作成して「解析」を押してください。</div>
+        <div id="summary" class="summary">地図をクリックしてS/Gを作成し、「解析」を押してください。</div>
         <div id="error" class="error"></div>
 
         <details>
           <summary>使い方</summary>
           <ol>
+            <li>ページ初期状態では点はありません。1回目クリックでS、2回目クリックでGを配置</li>
             <li>地図上の点は S=スタート、G=ゴール、数字=経由点</li>
             <li>地図クリックで「ゴール手前」に経由点を追加</li>
             <li>経由点は右クリック/ダブルクリック/ポップアップボタンで削除</li>
+            <li>平滑化距離は標高の移動平均に使う距離幅（m）です（0で無効）</li>
+            <li>セクション長はNFD計算用の勾配区間長です（OSMウェイ境界は無視）</li>
             <li>解析ボタンで標高・勾配グラフとNFDを確認</li>
+            <li>CSV出力ボタンで標高デバッグデータを保存</li>
+            <li>内挿デバッグCSVは入力点ごとに「内挿前/後標高」を出力</li>
             <li>グラフにマウスオーバーすると地図上に対応地点を表示</li>
           </ol>
         </details>
