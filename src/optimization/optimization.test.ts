@@ -1,50 +1,44 @@
-import { computeAssumedSpeeds } from "../optimization/assumed-speed";
+import { computeAssumedSpeeds, DEFAULT_GRADE_BINS } from "../optimization/assumed-speed";
 import { buildNfdLut, loadFactor } from "../optimization/lut";
-import { STANDARD_COURSE_DISTRIBUTION } from "../optimization/standard-course";
 import { CYCLIST_PRESETS } from "../presets";
-import { equilibriumPower } from "../physics/power";
+import { G } from "../types";
 
-describe("STANDARD_COURSE_DISTRIBUTION", () => {
-  test("frequencies sum to approximately 1", () => {
-    const total = STANDARD_COURSE_DISTRIBUTION.reduce(
-      (s, x) => s + x.frequency,
-      0,
-    );
-    expect(total).toBeCloseTo(1, 8);
-  });
+function aerodynamicCoeff(params: (typeof CYCLIST_PRESETS)["intermediate"]): number {
+  return (0.5 * params.rho * params.CdA) / params.eta;
+}
 
-  test("contains 0% grade", () => {
-    const hasZero = STANDARD_COURSE_DISTRIBUTION.some((x) => x.grade === 0);
-    expect(hasZero).toBe(true);
-  });
+function linearCoeff(grade: number, params: (typeof CYCLIST_PRESETS)["intermediate"]): number {
+  const gradeRatio = grade / 100;
+  const hyp = Math.sqrt(1 + gradeRatio * gradeRatio);
+  const sinTheta = gradeRatio / hyp;
+  const cosTheta = 1 / hyp;
+  return (params.mass * G * (sinTheta + params.Crr * cosTheta)) / params.eta;
+}
 
-  test("all frequencies are positive", () => {
-    for (const { frequency } of STANDARD_COURSE_DISTRIBUTION) {
-      expect(frequency).toBeGreaterThan(0);
-    }
-  });
-});
+function optimizeCost(v: number, a: number, b: number): number {
+  const v2 = v * v;
+  return (11 * a * v2 + 3 * b) * Math.pow(a * v2 + b, 3) * Math.pow(v, 4);
+}
 
 describe("computeAssumedSpeeds", () => {
   const params = CYCLIST_PRESETS.intermediate;
 
-  test("returns a speed for each grade in the distribution", () => {
-    const speeds = computeAssumedSpeeds(params, STANDARD_COURSE_DISTRIBUTION);
-    for (const { grade } of STANDARD_COURSE_DISTRIBUTION) {
+  test("returns a speed for each default grade bin", () => {
+    const speeds = computeAssumedSpeeds(params, DEFAULT_GRADE_BINS);
+    for (const grade of DEFAULT_GRADE_BINS) {
       expect(speeds.has(grade)).toBe(true);
     }
   });
 
-  test("all speeds are within [vMin, vMax]", () => {
-    const speeds = computeAssumedSpeeds(params, STANDARD_COURSE_DISTRIBUTION);
+  test("all speeds are >= vMin", () => {
+    const speeds = computeAssumedSpeeds(params, DEFAULT_GRADE_BINS);
     for (const v of speeds.values()) {
       expect(v).toBeGreaterThanOrEqual(params.vMin);
-      expect(v).toBeLessThanOrEqual(params.vMax);
     }
   });
 
   test("speed decreases with increasing grade", () => {
-    const speeds = computeAssumedSpeeds(params, STANDARD_COURSE_DISTRIBUTION);
+    const speeds = computeAssumedSpeeds(params, DEFAULT_GRADE_BINS);
     const v0 = speeds.get(0) as number;
     const v5 = speeds.get(5) as number;
     const vMinus5 = speeds.get(-5) as number;
@@ -52,24 +46,22 @@ describe("computeAssumedSpeeds", () => {
     expect(vMinus5).toBeGreaterThan(v0);
   });
 
-  test("NP constraint is approximately satisfied", () => {
-    // Σ f(n)·[P_eff(v(n),n)^4 - P_c^4] / v(n) ≈ 0
-    // P_eff = max(0, P_eq): cyclist cannot produce negative power (coasts on downhills)
-    const speeds = computeAssumedSpeeds(params, STANDARD_COURSE_DISTRIBUTION);
-    const cruisePower = params.ftp * params.cruisePowerFraction;
-    const cruisePower4 = Math.pow(cruisePower, 4);
+  test("unclamped grades satisfy the optimal-cost equation", () => {
+    const speeds = computeAssumedSpeeds(params, DEFAULT_GRADE_BINS);
+    const a = aerodynamicCoeff(params);
+    const b0 = linearCoeff(0, params);
+    const v0 = speeds.get(0) as number;
+    const c = optimizeCost(v0, a, b0);
 
-    let residual = 0;
-    let totalWeight = 0;
-    for (const { grade, frequency } of STANDARD_COURSE_DISTRIBUTION) {
+    for (const grade of DEFAULT_GRADE_BINS) {
       const v = speeds.get(grade) as number;
-      const pEff = Math.max(0, equilibriumPower(v, grade, params));
-      residual += frequency * (Math.pow(pEff, 4) - cruisePower4) / v;
-      totalWeight += frequency / v;
+      if (v > params.vMin + 1e-6) {
+        const b = linearCoeff(grade, params);
+        const lhs = optimizeCost(v, a, b);
+        const rel = Math.abs(lhs - c) / c;
+        expect(rel).toBeLessThan(1e-3);
+      }
     }
-
-    // The relative residual should be small (< 1% of the constraint magnitude)
-    expect(Math.abs(residual / (cruisePower4 * totalWeight))).toBeLessThan(0.01);
   });
 });
 

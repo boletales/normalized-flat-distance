@@ -14,22 +14,19 @@
  * Crr:  0.004 (road bike on paved road)
  * eta:  0.97 (drivetrain efficiency)
  *
- * FTP levels (W/kg × body mass 60 kg; PWR is defined against body mass, not total mass):
- *   Beginner:     2.0 W/kg → 120 W
- *   Intermediate: 3.0 W/kg → 180 W
- *   Advanced:     4.0 W/kg → 240 W
- *   Pro:          5.0 W/kg → 300 W
+ * Flat-road reference power P0 presets:
+ *   Beginner:     100 W
+ *   Intermediate: 150 W
+ *   Advanced:     200 W
+ *   Pro:          250 W
  *
- * Cruise power: 65% of FTP (mid-point of 60–70% range stated in the spec).
- *
- * Speed limits:
+ * Practical speed constraint:
  *   vMin: 4 km/h = 1.11 m/s  (minimum speed on steep climbs)
- *   vMax: 40 km/h = 11.11 m/s (maximum coasting speed)
  */
 
 import type { CyclistParams, CyclistLevel } from "./types";
 
-const BODY_MASS = 60;  // kg (body weight only; used for PWR / FTP calculation)
+const BODY_MASS = 60;  // kg
 const BIKE_MASS = 8;   // kg
 
 const BASE_PARAMS = {
@@ -38,26 +35,24 @@ const BASE_PARAMS = {
   CdA: 0.32,
   rho: 1.2,
   eta: 0.97,
-  cruisePowerFraction: 0.65,
   vMin: 4 / 3.6,   // 4 km/h → m/s
-  vMax: 40 / 3.6,  // 40 km/h → m/s
 };
 
 export const CYCLIST_PRESETS: Record<CyclistLevel, CyclistParams> = {
   beginner: {
     ...BASE_PARAMS,
-    ftp: 2.0 * BODY_MASS,  // 2.0 W/kg × body mass → 120 W
+    flatPower: 100,
   },
   intermediate: {
     ...BASE_PARAMS,
-    ftp: 3.0 * BODY_MASS,  // 3.0 W/kg × body mass → 180 W
+    flatPower: 150,
   },
   advanced: {
     ...BASE_PARAMS,
-    ftp: 4.0 * BODY_MASS,  // 4.0 W/kg × body mass → 240 W
+    flatPower: 200,
   },
   pro: {
     ...BASE_PARAMS,
-    ftp: 5.0 * BODY_MASS,  // 5.0 W/kg × body mass → 300 W
+    flatPower: 250,
   },
 };

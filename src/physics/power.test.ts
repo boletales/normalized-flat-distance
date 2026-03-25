@@ -40,10 +40,9 @@ describe("equilibriumPower", () => {
 describe("speedForPower", () => {
   const params = CYCLIST_PRESETS.intermediate;
 
-  test("returns speed within [vMin, vMax]", () => {
+  test("returns speed >= vMin", () => {
     const v = speedForPower(200, 0, params);
     expect(v).toBeGreaterThanOrEqual(params.vMin);
-    expect(v).toBeLessThanOrEqual(params.vMax);
   });
 
   test("higher power → higher speed on flat", () => {
@@ -63,16 +62,17 @@ describe("speedForPower", () => {
     expect(v).toBe(params.vMin);
   });
 
-  test("pins to vMax when power is very high on downhill", () => {
-    const v = speedForPower(params.ftp * 10, -10, params);
-    expect(v).toBe(params.vMax);
+  test("returns finite speed for very high power on downhill", () => {
+    const v = speedForPower(params.flatPower * 10, -10, params);
+    expect(Number.isFinite(v)).toBe(true);
+    expect(v).toBeGreaterThanOrEqual(params.vMin);
   });
 
   test("round-trip: speedForPower then equilibriumPower ≈ target", () => {
     const target = 200;
     const v = speedForPower(target, 3, params);
     // If not clamped, equilibriumPower should recover the target
-    if (v > params.vMin && v < params.vMax) {
+    if (v > params.vMin) {
       expect(equilibriumPower(v, 3, params)).toBeCloseTo(target, 3);
     }
   });

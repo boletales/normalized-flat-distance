@@ -1,104 +1,175 @@
 /**
  * Computation of the "assumed speed" for each gradient.
  *
- * The assumed speed v(n) for gradient n is the speed at which a cyclist
- * travelling the standard course achieves the minimum total time while
- * keeping the Normalized Power (NP, Coggan) equal to their cruise power.
+ * This module implements the P_0-based formulation described in docs/NFD.md.
  *
- * ## Derivation
+ * Let the equilibrium power be P(v, n) = a v^3 + b(n) v where:
+ *   a = 0.5 * rho * CdA / eta
+ *   b(n) = mass * g * (sin(theta) + Crr * cos(theta)) / eta
+ *   theta = arctan(n / 100)
  *
- * Let f(n) be the fraction of the standard course at gradient n, P(v, n) be
- * the equilibrium power at speed v and gradient n, and P_c be the cruise
- * power. We seek v(n) that:
+ * Given a flat-road power P_0 (at n=0), define v_0 by P(v_0, 0) = P_0 and:
  *
- *   minimise   Σ_n  f(n) / v(n)          (total time, up to a constant)
- *   subject to Σ_n  f(n) · P(v(n),n)⁴ / v(n)
- *              = P_c⁴ · Σ_n  f(n) / v(n)   (NP⁴ average = P_c⁴)
- *   and        v_min ≤ v(n) ≤ v_max
+ *   c = (11 a v_0^2 + 3 b(0)) (a v_0^2 + b(0))^3 v_0^4
  *
- * This is equivalent to:
+ * For each gradient n, the optimal speed v_op(n) satisfies:
  *
- *   Σ_n  f(n) · [P(v(n),n)⁴ − P_c⁴] / v(n) = 0   ... (*)
+ *   (11 a v^2 + 3 b(n)) (a v^2 + b(n))^3 v^4 = c
  *
- * Without the speed constraints the optimal strategy is constant power
- * P(v(n),n) = P_c (classic result: minimise time with fixed NP means ride
- * at constant power).  Speed clamping means some gradients are pinned at
- * v_min or v_max with a different power; for the remaining "free" gradients
- * we choose a single target power P_target (found by bisection) that
- * satisfies (*).
+ * We select the largest positive root with positive equilibrium power and
+ * then apply the practical minimum speed limit:
  *
- * Algorithm:
- *   1. For a trial P_target, compute v(n) = speedForPower(P_target, n, params)
- *      which already clamps to [v_min, v_max].
- *   2. Evaluate the constraint residual Σ f(n)·[P(v(n),n)⁴ − P_c⁴] / v(n).
- *   3. Bisect on P_target until the residual is ≈ 0.
+ *   v_est(n) = max(v_op(n), v_min)
  */
 
-import { equilibriumPower, speedForPower } from "../physics/power";
-import type { CyclistParams, GradeFrequency } from "../types";
+import { G } from "../types";
+import type { CyclistParams } from "../types";
+
+/** Default discrete grade bins for LUT generation. */
+export const DEFAULT_GRADE_BINS: number[] = (() => {
+  const bins: number[] = [];
+  for (let g = -300; g <= 300; g++) bins.push(g/10);
+  return bins;
+})();
+
+/** Internal upper bound (m/s) for numerical root search. */
+const SPEED_SEARCH_MAX = 200;
+
+function aerodynamicCoeff(params: CyclistParams): number {
+  return (0.5 * params.rho * params.CdA) / params.eta;
+}
+
+function linearCoeff(grade: number, params: CyclistParams): number {
+  const gradeRatio = grade / 100;
+  const hyp = Math.sqrt(1 + gradeRatio * gradeRatio);
+  const sinTheta = gradeRatio / hyp;
+  const cosTheta = 1 / hyp;
+  return (params.mass * G * (sinTheta + params.Crr * cosTheta)) / params.eta;
+}
+
+function equilibriumPowerFromCoeffs(v: number, a: number, b: number): number {
+  return (a * v * v + b) * v;
+}
+
+function costResidual(v: number, a: number, b: number, c: number): number {
+  const v2 = v * v;
+  const q = a * v2 + b;
+  return (11 * a * v2 + 3 * b) * Math.pow(q, 3) * Math.pow(v, 4) - c;
+}
+
+function bisectRoot(
+  f: (v: number) => number,
+  lo: number,
+  hi: number,
+  iterations = 80,
+): number {
+  let l = lo;
+  let h = hi;
+  let fl = f(l);
+  for (let i = 0; i < iterations; i++) {
+    const mid = (l + h) / 2;
+    const fm = f(mid);
+    if (fl === 0) return l;
+    if (fm === 0) return mid;
+    if (fl * fm < 0) {
+      h = mid;
+    } else {
+      l = mid;
+      fl = fm;
+    }
+  }
+  return (l + h) / 2;
+}
+
+function solveFlatSpeedForPower(params: CyclistParams): number {
+  const a = aerodynamicCoeff(params);
+  const b0 = linearCoeff(0, params);
+
+  const power = (v: number) => equilibriumPowerFromCoeffs(v, a, b0);
+  let lo = 0;
+  let hi = Math.max(params.vMin, 1);
+
+  while (power(hi) < params.flatPower && hi < SPEED_SEARCH_MAX) {
+    hi *= 2;
+  }
+
+  hi = Math.min(hi, SPEED_SEARCH_MAX);
+
+  return bisectRoot((v) => power(v) - params.flatPower, lo, hi);
+}
+
+function solveOptimalSpeedForGrade(
+  params: CyclistParams,
+  grade: number,
+  c: number,
+): number {
+  const a = aerodynamicCoeff(params);
+  const b = linearCoeff(grade, params);
+
+  const f = (v: number) => costResidual(v, a, b, c);
+  const p = (v: number) => equilibriumPowerFromCoeffs(v, a, b);
+
+  // When b < 0, the equilibrium power polynomial has a minimum at v = sqrt(-b/a).
+  // The optimal speed must be to the right of this point (and have positive power).
+  const lo = (b < 0 ? Math.sqrt(-b / a) : 0) + 1e-6;
+
+  let hi = Math.max(params.vMin, lo + 1);
+  while (f(hi) <= 0 && hi < SPEED_SEARCH_MAX) {
+    hi *= 2;
+  }
+
+  hi = Math.min(hi, SPEED_SEARCH_MAX);
+
+  const scanCount = 512;
+  const roots: number[] = [];
+
+  let prevV = lo;
+  let prevF = f(prevV);
+
+  for (let i = 1; i <= scanCount; i++) {
+    const v = lo + ((hi - lo) * i) / scanCount;
+    const fv = f(v);
+
+    if (prevF === 0) {
+      roots.push(prevV);
+    } else if (fv === 0) {
+      roots.push(v);
+    } else if (prevF * fv < 0) {
+      roots.push(bisectRoot(f, prevV, v));
+    }
+
+    prevV = v;
+    prevF = fv;
+  }
+
+  const validRoots = roots.filter((v) => p(v) > 0);
+  if (validRoots.length === 0) {
+    return params.vMin;
+  }
+  return Math.max(...validRoots);
+}
 
 /**
- * Compute the assumed speed for each gradient entry in `distribution`.
+ * Compute the assumed speed for each grade bin.
  *
- * @param params       Cyclist parameters (including cruise power fraction and FTP)
- * @param distribution Standard course gradient distribution
+ * @param params Cyclist parameters (including flat-road power P_0)
+ * @param grades  Grade bins in percent (defaults to -30..30 in 0.1% steps)
  * @returns Map from grade (%) to assumed speed (m/s)
  */
 export function computeAssumedSpeeds(
   params: CyclistParams,
-  distribution: GradeFrequency[],
+  grades: number[] = DEFAULT_GRADE_BINS,
 ): Map<number, number> {
-  const cruisePower = params.ftp * params.cruisePowerFraction;
-  const cruisePower4 = Math.pow(cruisePower, 4);
+  const a = aerodynamicCoeff(params);
+  const b0 = linearCoeff(0, params);
+  const v0 = solveFlatSpeedForPower(params);
+  const c = (11 * a * v0 * v0 + 3 * b0) * Math.pow(a * v0 * v0 + b0, 3) * Math.pow(v0, 4);
 
-  /**
-   * Given a trial target power, compute the NP-constraint residual.
-   * residual = Σ f(n)·[P_eff(v(n),n)⁴ − P_c⁴] / v(n)
-   * Positive → actual NP > P_c (target too high), negative → NP < P_c.
-   *
-   * P_eff = max(0, P_eq): the cyclist cannot produce negative power; on
-   * downhills where gravity exceeds resistances the rider simply coasts.
-   */
-  function residual(targetPower: number): number {
-    return distribution.reduce((sum, { grade, frequency }) => {
-      const v = speedForPower(targetPower, grade, params);
-      const pEff = Math.max(0, equilibriumPower(v, grade, params));
-      return sum + frequency * (Math.pow(pEff, 4) - cruisePower4) / v;
-    }, 0);
-  }
-
-  // Bisect to find P_target such that residual ≈ 0.
-  // Search range: a very small power (near zero) up to 2 × FTP.
-  let lo = 1;           // W (near-zero power, implies very slow speed)
-  let hi = params.ftp * 2; // W
-
-  const rLo = residual(lo);
-  const rHi = residual(hi);
-
-  let targetPower: number;
-  if (rLo >= 0) {
-    // Even at minimum power, NP >= cruise; pin everything at minimum speed
-    targetPower = lo;
-  } else if (rHi <= 0) {
-    // Even at maximum power, NP <= cruise; pin everything at maximum speed
-    targetPower = hi;
-  } else {
-    // Bisect (residual is increasing in targetPower)
-    for (let i = 0; i < 64; i++) {
-      const mid = (lo + hi) / 2;
-      if (residual(mid) < 0) {
-        lo = mid;
-      } else {
-        hi = mid;
-      }
-    }
-    targetPower = (lo + hi) / 2;
-  }
-
-  // Build the result map
   const result = new Map<number, number>();
-  for (const { grade } of distribution) {
-    result.set(grade, speedForPower(targetPower, grade, params));
+  for (const grade of grades) {
+    const vOp = solveOptimalSpeedForGrade(params, grade, c);
+    const vEst = Math.max(params.vMin, vOp);
+    result.set(grade, vEst);
   }
   return result;
 }
