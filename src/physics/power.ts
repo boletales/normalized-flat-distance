@@ -13,6 +13,9 @@
 import { G, AIR_DENSITY } from "../types";
 import type { CyclistParams } from "../types";
 
+/** Internal upper bound (m/s) for numeric speed solving in speedForPower(). */
+const SPEED_SOLVER_MAX = 100;
+
 /**
  * Compute the equilibrium mechanical power output (W) required to maintain a
  * constant speed `v` (m/s) on a slope of `grade` percent.
@@ -47,11 +50,11 @@ export function equilibriumPower(
  * Find the speed (m/s) at which the equilibrium power equals `targetPower`,
  * for a given gradient, using bisection search.
  *
- * The speed is clamped to [params.vMin, params.vMax].
- * If the equilibrium power at vMax is still below targetPower (e.g. steep
- * downhill), vMax is returned.
- * If the equilibrium power at vMin already exceeds targetPower (e.g. very
- * steep uphill), vMin is returned.
+ * The speed is clamped from below at `params.vMin`.
+ * If the equilibrium power at the internal upper bound is still below
+ * `targetPower` (e.g. very steep downhill), that upper bound is returned.
+ * If the equilibrium power at `vMin` already exceeds targetPower (e.g. very
+ * steep uphill), `vMin` is returned.
  *
  * @param targetPower Target power in watts
  * @param grade       Gradient in percent
@@ -66,12 +69,12 @@ export function speedForPower(
   const pAtMin = equilibriumPower(params.vMin, grade, params);
   if (pAtMin >= targetPower) return params.vMin;
 
-  const pAtMax = equilibriumPower(params.vMax, grade, params);
-  if (pAtMax <= targetPower) return params.vMax;
+  const pAtMax = equilibriumPower(SPEED_SOLVER_MAX, grade, params);
+  if (pAtMax <= targetPower) return SPEED_SOLVER_MAX;
 
   // Bisection: equilibriumPower is strictly increasing in v (for v > 0)
   let lo = params.vMin;
-  let hi = params.vMax;
+  let hi = SPEED_SOLVER_MAX;
   for (let i = 0; i < 64; i++) {
     const mid = (lo + hi) / 2;
     if (equilibriumPower(mid, grade, params) < targetPower) {

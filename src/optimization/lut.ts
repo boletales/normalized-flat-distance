@@ -9,17 +9,17 @@
  *
  *   s(n) = P_eq(v(n), n)⁴ / v(n)   [W⁴·s/m]
  *
- * Here v(n) is the assumed speed at gradient n (see assumed-speed.ts) and
- * P_eq is the equilibrium power at that speed.
+ * Here v(n) is the assumed speed at gradient n computed from flat-road
+ * power P_0 (see assumed-speed.ts), and P_eq is the equilibrium power at
+ * that speed.
  *
  * A section of distance d at gradient n contributes d · c(n) km to the
  * total NFD of a course.
  */
 
 import { equilibriumPower } from "../physics/power";
-import { computeAssumedSpeeds } from "./assumed-speed";
-import { STANDARD_COURSE_DISTRIBUTION } from "./standard-course";
-import type { CyclistParams, GradeFrequency, NfdLut } from "../types";
+import { computeAssumedSpeeds, DEFAULT_GRADE_BINS } from "./assumed-speed";
+import type { CyclistParams, NfdLut } from "../types";
 
 /**
  * Compute the load factor s(n) = P_eq(v, n)⁴ / v for a given speed and grade.
@@ -39,17 +39,17 @@ export function loadFactor(
 }
 
 /**
- * Build the NFD coefficient LUT for a cyclist on a given distribution.
+ * Build the NFD coefficient LUT for a cyclist on given grade bins.
  *
- * @param params       Cyclist parameters
- * @param distribution Grade distribution (defaults to standard course)
+ * @param params Cyclist parameters
+ * @param grades Grade bins in percent (defaults to -15..15 integer bins)
  * @returns Map from grade (%) to NFD coefficient (dimensionless)
  */
 export function buildNfdLut(
   params: CyclistParams,
-  distribution: GradeFrequency[] = STANDARD_COURSE_DISTRIBUTION,
+  grades: number[] = DEFAULT_GRADE_BINS,
 ): NfdLut {
-  const assumedSpeeds = computeAssumedSpeeds(params, distribution);
+  const assumedSpeeds = computeAssumedSpeeds(params, grades);
 
   // s(0): load factor at 0% gradient
   const v0 = assumedSpeeds.get(0);
@@ -59,7 +59,7 @@ export function buildNfdLut(
   const s0 = loadFactor(v0, 0, params);
 
   const lut: NfdLut = new Map();
-  for (const [grade, v] of assumedSpeeds) {
+  for (const [grade, v] of assumedSpeeds.entries()) {
     const s = loadFactor(v, grade, params);
     lut.set(grade, s / s0);
   }

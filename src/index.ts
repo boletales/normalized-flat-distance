@@ -7,7 +7,6 @@ export type {
   CyclistLevel,
   CourseSection,
   NfdLut,
-  GradeFrequency,
 } from "./types";
 
 export { G, AIR_DENSITY } from "./types";
@@ -20,10 +19,7 @@ export {
 } from "./physics/power";
 
 export {
-  STANDARD_COURSE_DISTRIBUTION,
-} from "./optimization/standard-course";
-
-export {
+  DEFAULT_GRADE_BINS,
   computeAssumedSpeeds,
 } from "./optimization/assumed-speed";
 
