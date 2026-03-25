@@ -52,6 +52,8 @@ export type {
 export {
   haversineDistanceMeters,
   smoothElevations,
+  smoothElevationsByDistance,
+  smoothElevationsByDistanceMeters,
   parseGsiDemTextTile,
   buildCourseSectionsFromWaypoints,
   computeNfdFromWaypoints,

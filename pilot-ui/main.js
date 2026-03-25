@@ -15,11 +15,13 @@ import {
 /** @typedef {{lat:number, lon:number}} GeoPoint */
 
 const levelSelect = document.getElementById("levelSelect");
-const smoothingWindowInput = document.getElementById("smoothingWindow");
-const minimumDistanceInput = document.getElementById("minimumDistance");
+const smoothingDistanceInput = document.getElementById("smoothingDistance");
+const sectionLengthInput = document.getElementById("sectionLength");
 const maxAbsGradeInput = document.getElementById("maxAbsGrade");
 const analyzeButton = document.getElementById("analyzeButton");
 const clearButton = document.getElementById("clearButton");
+const exportButton = document.getElementById("exportButton");
+const exportInterpolationButton = document.getElementById("exportInterpolationButton");
 const summary = document.getElementById("summary");
 const error = document.getElementById("error");
 const profileCanvas = document.getElementById("profileChart");
@@ -28,6 +30,11 @@ const profileCanvas = document.getElementById("profileChart");
 let latestRouteCoordinates = [];
 /** @type {import("../src/course-gradient/analyzer").RouteProfilePoint[]} */
 let latestProfile = [];
+/** @type {import("../src/types").CourseSection[]} */
+let latestSections = [];
+
+/** @type {Map<string, {segments:Array<{a:GeoPoint,b:GeoPoint}>}>} */
+const tunnelBridgeCache = new Map();
 
 const tileProvider = new GsiDemTileElevationProvider({
   zoom: 15,
@@ -55,10 +62,7 @@ const hoverMarker = L.circleMarker([35.68, 139.76], {
   weight: 2,
 });
 
-const initialWaypoints = [
-  L.latLng(35.681236, 139.767125), // Tokyo Station
-  L.latLng(35.710063, 139.8107), // Skytree
-];
+const initialWaypoints = [];
 
 function showUiError(message) {
   error.textContent = message;
@@ -102,6 +106,11 @@ function removeWaypointAt(index) {
 
 const routingControl = L.Routing.control({
   waypoints: initialWaypoints,
+  router: L.Routing.osrmv1({
+    // 自転車向けプロファイルを利用して高速道路選択を避ける
+    profile: "cycling",
+    serviceUrl: "https://router.project-osrm.org/route/v1",
+  }),
   lineOptions: {
     styles: [{ color: "#1769ff", weight: 5 }],
     extendToWaypoints: true,
@@ -186,14 +195,138 @@ clearButton.addEventListener("click", () => {
   routingControl.setWaypoints([...initialWaypoints]);
   latestRouteCoordinates = [];
   latestProfile = [];
+  latestSections = [];
   if (chart) {
     chart.data.labels = [];
     chart.data.datasets[0].data = [];
     chart.data.datasets[1].data = [];
+    chart.data.datasets[2].data = [];
+    chart.data.datasets[3].data = [];
     chart.update();
   }
   hoverMarker.remove();
-  summary.textContent = "ルートを作成して「解析」を押してください。";
+  summary.textContent = "地図をクリックしてS/Gを作成し、「解析」を押してください。";
+  clearUiError();
+});
+
+function toCsvCell(value) {
+  const text = String(value ?? "");
+  if (/[,"\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function triggerDownload(filename, content, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function buildProfileDebugCsv(profile) {
+  const header = [
+    "index",
+    "lat",
+    "lon",
+    "distanceFromStart_m",
+    "demElevation_m",
+    "rawElevationInterpolated_m",
+    "smoothedElevation_m",
+    "segmentGrade_percent",
+    "elevationSource",
+  ];
+
+  const lines = [header.map(toCsvCell).join(",")];
+  for (let i = 0; i < profile.length; i += 1) {
+    const p = profile[i];
+    const prev = i > 0 ? profile[i - 1] : undefined;
+    const d = prev ? p.distanceFromStart - prev.distanceFromStart : 0;
+    const de = prev ? p.elevation - prev.elevation : 0;
+    const grade = d <= 0 ? 0 : (de / d) * 100;
+
+    lines.push([
+      i,
+      p.lat,
+      p.lon,
+      p.distanceFromStart,
+      p.demElevation ?? p.rawElevation,
+      p.rawElevation,
+      p.elevation,
+      grade,
+      p.elevationSource,
+    ].map(toCsvCell).join(","));
+  }
+
+  return lines.join("\n");
+}
+
+function buildSectionsDebugCsv(sections) {
+  const lines = ["index,distance_m,grade_percent"];
+  for (let i = 0; i < sections.length; i += 1) {
+    const s = sections[i];
+    lines.push([i, s.distance, s.grade].map(toCsvCell).join(","));
+  }
+  return lines.join("\n");
+}
+
+function buildInterpolationDebugCsv(profile) {
+  const header = [
+    "緯度 / deg",
+    "経度 / deg",
+    "距離程 / m",
+    "内挿前標高 / m",
+    "内挿後標高 / m",
+  ];
+
+  const lines = [header.map(toCsvCell).join(",")];
+  for (const p of profile) {
+    lines.push([
+      p.lat,
+      p.lon,
+      p.distanceFromStart,
+      p.demElevation ?? p.rawElevation,
+      p.rawElevation,
+    ].map(toCsvCell).join(","));
+  }
+  return lines.join("\n");
+}
+
+exportButton?.addEventListener("click", () => {
+  if (!latestProfile.length) {
+    showUiError("先に解析を実行してください。出力対象データがありません。");
+    return;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[.:]/g, "-");
+  triggerDownload(
+    `nfd-profile-debug-${timestamp}.csv`,
+    buildProfileDebugCsv(latestProfile),
+    "text/csv;charset=utf-8",
+  );
+  triggerDownload(
+    `nfd-sections-debug-${timestamp}.csv`,
+    buildSectionsDebugCsv(latestSections),
+    "text/csv;charset=utf-8",
+  );
+  clearUiError();
+});
+
+exportInterpolationButton?.addEventListener("click", () => {
+  if (!latestProfile.length) {
+    showUiError("先に解析を実行してください。出力対象データがありません。");
+    return;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[.:]/g, "-");
+  triggerDownload(
+    `nfd-interpolation-debug-${timestamp}.csv`,
+    buildInterpolationDebugCsv(latestProfile),
+    "text/csv;charset=utf-8",
+  );
   clearUiError();
 });
 
@@ -203,7 +336,18 @@ const chart = new Chart(profileCanvas, {
     labels: [],
     datasets: [
       {
-        label: "標高 [m]",
+        label: "生標高 [m]",
+        data: [],
+        yAxisID: "y",
+        borderColor: "#98a2b3",
+        backgroundColor: "rgba(152, 162, 179, 0.1)",
+        borderWidth: 1,
+        borderDash: [5, 5],
+        pointRadius: 0,
+        tension: 0.1,
+      },
+      {
+        label: "平滑化標高 [m]",
         data: [],
         yAxisID: "y",
         borderColor: "#1570ef",
@@ -213,6 +357,18 @@ const chart = new Chart(profileCanvas, {
         tension: 0.1,
       },
       {
+        label: "セクション境界",
+        data: [],
+        type: "scatter",
+        yAxisID: "y",
+        borderColor: "#1570ef",
+        backgroundColor: "#1570ef",
+        borderWidth: 1,
+        showLine: false,
+        pointRadius: 2.5,
+        pointHoverRadius: 4,
+      },
+      {
         label: "勾配 [%]",
         data: [],
         yAxisID: "y1",
@@ -220,7 +376,7 @@ const chart = new Chart(profileCanvas, {
         backgroundColor: "rgba(247, 144, 9, 0.2)",
         borderWidth: 2,
         pointRadius: 0,
-        tension: 0.1,
+        tension: 0,
       },
     ],
   },
@@ -261,8 +417,27 @@ const chart = new Chart(profileCanvas, {
       const first = activeElements[0];
       if (!first) return;
 
-      const index = first.index;
-      const point = latestProfile[index];
+      const datasetIndex = first.datasetIndex;
+      const dataIndex = first.index;
+      const dataset = chart.data.datasets[datasetIndex];
+      const dataPoint = dataset?.data?.[dataIndex];
+
+      let xKm = 0;
+      if (dataPoint && typeof dataPoint === "object" && "x" in dataPoint && typeof dataPoint.x === "number") {
+        xKm = dataPoint.x;
+      }
+
+      let nearest = null;
+      let minAbs = Number.POSITIVE_INFINITY;
+      for (const p of latestProfile) {
+        const dx = Math.abs((p.distanceFromStart / 1000) - xKm);
+        if (dx < minAbs) {
+          minAbs = dx;
+          nearest = p;
+        }
+      }
+
+      const point = nearest;
       if (!point) return;
 
       hoverMarker.setLatLng([point.lat, point.lon]);
@@ -304,32 +479,226 @@ function downsample(points, maxPoints = 2500) {
   return sampled;
 }
 
+function buildBBox(points, padding = 0.003) {
+  let minLat = Number.POSITIVE_INFINITY;
+  let maxLat = Number.NEGATIVE_INFINITY;
+  let minLon = Number.POSITIVE_INFINITY;
+  let maxLon = Number.NEGATIVE_INFINITY;
+
+  for (const p of points) {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lon > maxLon) maxLon = p.lon;
+  }
+
+  return {
+    south: minLat - padding,
+    west: minLon - padding,
+    north: maxLat + padding,
+    east: maxLon + padding,
+  };
+}
+
+function bboxKey(bbox) {
+  return [bbox.south, bbox.west, bbox.north, bbox.east]
+    .map((v) => v.toFixed(3))
+    .join(",");
+}
+
+function toLocalMeters(p, originLatRad) {
+  const kx = 111320 * Math.cos(originLatRad);
+  const ky = 110540;
+  return { x: p.lon * kx, y: p.lat * ky };
+}
+
+function squaredDistancePointToSegment(point, a, b, originLatRad) {
+  const p = toLocalMeters(point, originLatRad);
+  const s = toLocalMeters(a, originLatRad);
+  const e = toLocalMeters(b, originLatRad);
+
+  const vx = e.x - s.x;
+  const vy = e.y - s.y;
+  const wx = p.x - s.x;
+  const wy = p.y - s.y;
+
+  const vv = vx * vx + vy * vy;
+  if (vv === 0) {
+    const dx = p.x - s.x;
+    const dy = p.y - s.y;
+    return dx * dx + dy * dy;
+  }
+
+  const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / vv));
+  const qx = s.x + t * vx;
+  const qy = s.y + t * vy;
+  const dx = p.x - qx;
+  const dy = p.y - qy;
+  return dx * dx + dy * dy;
+}
+
+async function fetchTunnelBridgeSegments(points) {
+  if (points.length === 0) {
+    return { segments: [] };
+  }
+
+  const bbox = buildBBox(points);
+  const key = bboxKey(bbox);
+  const cached = tunnelBridgeCache.get(key);
+  if (cached) return cached;
+
+  const query = `
+[out:json][timeout:25];
+(
+  way["tunnel"~"yes|building_passage"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+  way["bridge"~"yes|viaduct|movable|aqueduct"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+);
+out geom;
+`;
+
+  const response = await fetch("https://overpass-api.de/api/interpreter", {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/plain;charset=UTF-8",
+      Accept: "application/json",
+    },
+    body: query,
+  });
+
+  if (!response.ok) {
+    throw new Error(`OSM tunnel/bridge fetch failed: ${response.status} ${response.statusText}`);
+  }
+
+  const body = await response.json();
+  const segments = [];
+
+  for (const element of body.elements ?? []) {
+    if (!Array.isArray(element?.geometry) || element.geometry.length < 2) {
+      continue;
+    }
+
+    for (let i = 1; i < element.geometry.length; i += 1) {
+      const prev = element.geometry[i - 1];
+      const curr = element.geometry[i];
+      if (
+        typeof prev?.lat !== "number"
+        || typeof prev?.lon !== "number"
+        || typeof curr?.lat !== "number"
+        || typeof curr?.lon !== "number"
+      ) {
+        continue;
+      }
+
+      segments.push({
+        a: { lat: prev.lat, lon: prev.lon },
+        b: { lat: curr.lat, lon: curr.lon },
+      });
+    }
+  }
+
+  const payload = { segments };
+  tunnelBridgeCache.set(key, payload);
+  return payload;
+}
+
+function markTunnelBridgeInterpolation(points, segments, thresholdMeters = 20) {
+  if (segments.length === 0) {
+    return { points, markedCount: 0 };
+  }
+
+  const threshold2 = thresholdMeters * thresholdMeters;
+  const originLat = points.reduce((s, p) => s + p.lat, 0) / points.length;
+  const originLatRad = (originLat * Math.PI) / 180;
+
+  let markedCount = 0;
+  const marked = points.map((p) => {
+    let near = false;
+    for (const seg of segments) {
+      const d2 = squaredDistancePointToSegment(p, seg.a, seg.b, originLatRad);
+      if (d2 <= threshold2) {
+        near = true;
+        break;
+      }
+    }
+
+    if (near) {
+      markedCount += 1;
+      return { ...p, interpolateElevation: true };
+    }
+
+    return p;
+  });
+
+  return { points: marked, markedCount };
+}
+
 /**
  * @param {import("../src/course-gradient/analyzer").RouteProfilePoint[]} profile
+ * @param {import("../src/types").CourseSection[]} sections
  */
-function buildChartData(profile) {
-  const elevationSeries = [];
-  const gradeSeries = [];
+function buildChartData(profile, sections) {
+  const rawElevationSeries = [];
+  const smoothedElevationSeries = [];
+  const sectionBoundaryPoints = [];
+  const sectionGradeSeries = [];
 
   for (let i = 0; i < profile.length; i += 1) {
     const current = profile[i];
     const x = current.distanceFromStart / 1000;
 
-    elevationSeries.push({ x, y: current.elevation });
+    rawElevationSeries.push({ x, y: current.rawElevation });
+    smoothedElevationSeries.push({ x, y: current.elevation });
 
-    if (i === 0) {
-      gradeSeries.push({ x, y: 0 });
-      continue;
-    }
-
-    const previous = profile[i - 1];
-    const d = current.distanceFromStart - previous.distanceFromStart;
-    const de = current.elevation - previous.elevation;
-    const grade = d <= 0 ? 0 : (de / d) * 100;
-    gradeSeries.push({ x, y: grade });
   }
 
-  return { elevationSeries, gradeSeries };
+  let accumulated = 0;
+  const findNearestProfilePointByDistance = (distanceMeters) => {
+    if (!profile.length) {
+      return null;
+    }
+    let nearest = profile[0] ?? null;
+    let minAbs = Number.POSITIVE_INFINITY;
+    for (const p of profile) {
+      const d = Math.abs(p.distanceFromStart - distanceMeters);
+      if (d < minAbs) {
+        minAbs = d;
+        nearest = p;
+      }
+    }
+    return nearest;
+  };
+
+  if (profile.length > 0) {
+    const first = profile[0];
+    if (first) {
+      sectionBoundaryPoints.push({ x: 0, y: first.elevation });
+    }
+  }
+
+  for (const section of sections) {
+    const d = section.distance;
+    const start = accumulated;
+    const end = accumulated + d;
+    const mid = (start + end) / 2;
+    sectionGradeSeries.push({ x: mid / 1000, y: section.grade });
+
+    const boundaryPoint = findNearestProfilePointByDistance(end);
+    if (boundaryPoint) {
+      sectionBoundaryPoints.push({
+        x: end / 1000,
+        y: boundaryPoint.elevation,
+      });
+    }
+
+    accumulated = end;
+  }
+
+  return {
+    rawElevationSeries,
+    smoothedElevationSeries,
+    sectionBoundaryPoints,
+    sectionGradeSeries,
+  };
 }
 
 analyzeButton.addEventListener("click", async () => {
@@ -344,29 +713,49 @@ analyzeButton.addEventListener("click", async () => {
     analyzeButton.textContent = "解析中...";
 
     const level = levelSelect.value;
-    const smoothingWindow = Number(smoothingWindowInput.value);
-    const minimumDistance = Number(minimumDistanceInput.value);
+    const smoothingDistanceMeters = Number(smoothingDistanceInput.value);
+    const sectionLengthMeters = Number(sectionLengthInput.value);
     const maxAbsGrade = Number(maxAbsGradeInput.value);
 
     const sampledCoordinates = downsample(latestRouteCoordinates, 2500);
     const lut = getOrBuildLut(level);
 
+    let interpolationMarkedCount = 0;
+    let coordinatesForAnalysis = sampledCoordinates;
+    try {
+      const { segments } = await fetchTunnelBridgeSegments(sampledCoordinates);
+      const marked = markTunnelBridgeInterpolation(sampledCoordinates, segments, 20);
+      coordinatesForAnalysis = marked.points;
+      interpolationMarkedCount = marked.markedCount;
+    } catch (osmError) {
+      // OSM補助データが取れない場合は通常処理を継続
+      console.warn("Failed to fetch tunnel/bridge geometries:", osmError);
+    }
+
     const result = await computeNfdFromWaypoints(
-      sampledCoordinates,
+      coordinatesForAnalysis,
       tileProvider,
       lut,
       {
-        smoothingWindow,
-        minimumDistance,
+        smoothingDistanceMeters,
+        sectionLengthMeters,
         maxAbsGrade,
       },
     );
 
     latestProfile = result.profile;
+  latestSections = result.sections;
 
-    const { elevationSeries, gradeSeries } = buildChartData(result.profile);
-    chart.data.datasets[0].data = elevationSeries;
-    chart.data.datasets[1].data = gradeSeries;
+    const {
+      rawElevationSeries,
+      smoothedElevationSeries,
+      sectionBoundaryPoints,
+      sectionGradeSeries,
+    } = buildChartData(result.profile, result.sections);
+    chart.data.datasets[0].data = rawElevationSeries;
+    chart.data.datasets[1].data = smoothedElevationSeries;
+    chart.data.datasets[2].data = sectionBoundaryPoints;
+    chart.data.datasets[3].data = sectionGradeSeries;
     chart.update();
 
     const actualDistanceMeters = result.profile[result.profile.length - 1]?.distanceFromStart ?? 0;
@@ -377,6 +766,7 @@ analyzeButton.addEventListener("click", async () => {
       `NFD: ${result.nfdKm.toFixed(2)} km`,
       `NFD/実距離: ${(actualDistanceMeters > 0 ? result.nfdMeters / actualDistanceMeters : 0).toFixed(3)}`,
       `セクション数: ${result.sections.length.toLocaleString()}`,
+      `内挿点(トンネル/橋推定): ${interpolationMarkedCount.toLocaleString()} 点`,
       `タイルキャッシュ: ${tileProvider.size.toLocaleString()} 枚`,
     ].join("<br>");
   } catch (e) {
