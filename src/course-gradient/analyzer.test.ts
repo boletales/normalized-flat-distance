@@ -309,6 +309,61 @@ describe("GsiDemTileElevationProvider", () => {
     expect(requestCount).toBe(2);
   });
 
+  test("checks same pixel in next template before nearest search in first template", async () => {
+    const target = { lat: 35.70825, lon: 139.79742 };
+    const zoom = 15;
+    const n = 2 ** zoom;
+    const tileX = Math.floor(((target.lon + 180) / 360) * n);
+    const tileY = Math.floor((
+      (1 - Math.log(Math.tan((target.lat * Math.PI) / 180) + (1 / Math.cos((target.lat * Math.PI) / 180))) / Math.PI)
+      / 2
+    ) * n);
+    const pixelX = Math.floor(((((target.lon + 180) / 360) * n) - tileX) * 256);
+    const pixelY = Math.floor((((
+      (1 - Math.log(Math.tan((target.lat * Math.PI) / 180) + (1 / Math.cos((target.lat * Math.PI) / 180))) / Math.PI)
+      / 2
+    ) * n) - tileY) * 256);
+
+    const rows5a = new Array<string>(256)
+      .fill(0)
+      .map(() => new Array<string>(256).fill("e").join(","));
+    // Keep the target pixel as no-data but place a nearby finite value.
+    rows5a[Math.max(0, pixelY - 1)] = new Array<string>(256)
+      .fill("e")
+      .map((v, idx) => (idx === pixelX ? "111" : v))
+      .join(",");
+    const tileText5a = rows5a.join("\n");
+
+    const tileTextDem = createUniformDemTileText(222);
+
+    const fetchFn: typeof fetch = (async (url: string | URL | Request) => {
+      const urlText = String(url);
+      if (urlText.includes("dem5a")) {
+        return { ok: true, text: async () => tileText5a } as Response;
+      }
+      if (urlText.includes("dem/")) {
+        return { ok: true, text: async () => tileTextDem } as Response;
+      }
+      return { ok: false, status: 404, statusText: "Not Found", text: async () => "" } as Response;
+    }) as typeof fetch;
+
+    const provider = new GsiDemTileElevationProvider({
+      fetchFn,
+      zoom,
+      tileTemplates: [
+        "https://example.com/dem5a/{z}/{x}/{y}.txt",
+        "https://example.com/dem/{z}/{x}/{y}.txt",
+      ],
+      noDataTileSearchRadius: 0,
+      noDataPixelSearchRadius: 2,
+    });
+
+    const elevation = await provider.getElevation(target);
+
+    // If nearest search in dem5a ran first, this would be 111.
+    expect(elevation).toBe(222);
+  });
+
   test("deduplicates concurrent requests for the same tile", async () => {
     let requestCount = 0;
     const tileText = createUniformDemTileText(77);

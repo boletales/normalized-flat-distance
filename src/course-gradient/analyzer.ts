@@ -702,17 +702,34 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
     const pixelX = clampInteger(Math.floor(pixelXFloat), 0, DEM_TILE_SIZE - 1);
     const pixelY = clampInteger(Math.floor(pixelYFloat), 0, DEM_TILE_SIZE - 1);
 
+    const availableTiles: Array<{ template: string; tile: DemTile }> = [];
+
+    // Phase 1: Prefer exact pixel match, but first try all DEM templates.
     for (const template of this.tileTemplates) {
       const tile = await this.getTile(template, tileX, tileY);
       if (tile === null) {
         continue;
       }
 
+      availableTiles.push({ template, tile });
+
+      const exact = demValueAt(tile, pixelX, pixelY);
+      if (exact !== undefined) {
+        return exact;
+      }
+    }
+
+    // Phase 2: If exact match is unavailable across templates,
+    // allow nearest finite value search in the current tile.
+    for (const { tile } of availableTiles) {
       const value = findNearestFiniteDemValue(tile, pixelX, pixelY);
       if (value !== undefined) {
         return value;
       }
+    }
 
+    // Phase 3: Expand search to nearby tiles.
+    for (const { template } of availableTiles) {
       const nearby = await this.findNearbyValueAcrossTiles(
         template,
         tileX,

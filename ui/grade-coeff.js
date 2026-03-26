@@ -1,9 +1,13 @@
-import { CYCLIST_PRESETS, buildNfdLut, computeAssumedSpeeds } from "../src/index";
+import { BIKE_TYPE_PRESETS, CYCLIST_PRESETS, buildNfdLut, computeAssumedSpeeds } from "../src/index";
 import { equilibriumPower } from "../src/physics/power";
 
+const bikeTypeSelect = document.getElementById("bikeTypeSelect");
 const crrInput = document.getElementById("crrInput");
 const cdaInput = document.getElementById("cdaInput");
+const massInput = document.getElementById("massInput");
 const p0Input = document.getElementById("p0Input");
+const minSpeedInput = document.getElementById("minSpeedInput");
+const etaInput = document.getElementById("etaInput");
 const minGradeInput = document.getElementById("minGradeInput");
 const maxGradeInput = document.getElementById("maxGradeInput");
 const stepGradeInput = document.getElementById("stepGradeInput");
@@ -48,6 +52,14 @@ function buildGrades(minGrade, maxGrade, step) {
   return grades;
 }
 
+function applyBikeTypePreset(bikeType) {
+  const preset = BIKE_TYPE_PRESETS[bikeType] ?? BIKE_TYPE_PRESETS.road;
+  crrInput.value = String(preset.Crr);
+  cdaInput.value = String(preset.CdA);
+  massInput.value = String(preset.mass);
+  etaInput.value = String(preset.eta);
+}
+
 function renderTable(rows) {
   resultBody.innerHTML = "";
   for (const row of rows) {
@@ -78,17 +90,24 @@ function generate() {
 
   const crr = Number(crrInput.value);
   const cda = Number(cdaInput.value);
+  const mass = Number(massInput.value);
   const p0 = Number(p0Input.value);
+  const minSpeedKmh = Number(minSpeedInput.value);
+  const eta = Number(etaInput.value);
   const minGrade = Math.round(Number(minGradeInput.value));
   const maxGrade = Math.round(Number(maxGradeInput.value));
   const step = Math.round(Number(stepGradeInput.value));
 
-  if (!Number.isFinite(crr) || !Number.isFinite(cda) || !Number.isFinite(p0)) {
+  if (!Number.isFinite(crr) || !Number.isFinite(cda) || !Number.isFinite(mass) || !Number.isFinite(p0) || !Number.isFinite(minSpeedKmh) || !Number.isFinite(eta)) {
     setError("数値入力が不正です。");
     return;
   }
-  if (crr <= 0 || cda <= 0 || p0 <= 0) {
-    setError("Crr, CdA, P_0 は正の値を指定してください。");
+  if (crr <= 0 || cda <= 0 || mass <= 0 || p0 <= 0 || minSpeedKmh <= 0) {
+    setError("Crr, CdA, 全重量, P_0, 最低速度は正の値を指定してください。");
+    return;
+  }
+  if (eta <= 0 || eta > 1) {
+    setError("駆動効率 η は 0 より大きく 1 以下で指定してください。");
     return;
   }
   if (!Number.isFinite(minGrade) || !Number.isFinite(maxGrade) || !Number.isFinite(step) || step <= 0) {
@@ -106,7 +125,10 @@ function generate() {
     ...CYCLIST_PRESETS.intermediate,
     Crr: crr,
     CdA: cda,
+    mass,
     flatPower: p0,
+    vMin: minSpeedKmh / 3.6,
+    eta,
   };
 
   const lut = buildNfdLut(params, grades);
@@ -127,10 +149,13 @@ function generate() {
   renderTable(rows);
 
   const c0 = lut.get(0);
-  summary.textContent = `生成完了: ${rows.length}件 / c(0)=${typeof c0 === "number" ? c0.toFixed(6) : "N/A"}`;
+  summary.textContent = `生成完了: ${rows.length}件 / c(0)=${typeof c0 === "number" ? c0.toFixed(6) : "N/A"} / vMin=${minSpeedKmh.toFixed(1)}km/h / η=${eta.toFixed(3)}`;
 }
 
 generateButton.addEventListener("click", generate);
+bikeTypeSelect.addEventListener("change", () => {
+  applyBikeTypePreset(bikeTypeSelect.value);
+});
 
 csvButton.addEventListener("click", () => {
   if (!latestRows.length) {
@@ -153,4 +178,5 @@ csvButton.addEventListener("click", () => {
   triggerDownload(`nfd-grade-coeff-${timestamp}.csv`, lines.join("\n"));
 });
 
+applyBikeTypePreset(bikeTypeSelect.value);
 generate();

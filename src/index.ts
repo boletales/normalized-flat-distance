@@ -11,7 +11,8 @@ export type {
 
 export { G, AIR_DENSITY } from "./types";
 
-export { CYCLIST_PRESETS } from "./presets";
+export { CYCLIST_PRESETS, BIKE_TYPE_PRESETS } from "./presets";
+export type { BikeType } from "./presets";
 
 export {
   equilibriumPower,
