@@ -1,14 +1,12 @@
 import {
-  buildCourseSectionsFromWaypoints,
+  buildCourseProfileFromWaypoints,
   CachedElevationProvider,
   computeNfdFromWaypoints,
   GsiDemTileElevationProvider,
   haversineDistanceMeters,
   interpolateMaskedElevations,
   parseGsiDemTextTile,
-  smoothElevations,
-  smoothElevationsByDistance,
-  smoothElevationsByDistanceMeters,
+  smoothElevationsWithSavitzkyGolay,
   type ElevationProvider,
   type GeoPoint,
 } from "./analyzer";
@@ -32,47 +30,6 @@ describe("haversineDistanceMeters", () => {
   });
 });
 
-describe("smoothElevations", () => {
-  test("preserves constant series", () => {
-    const values = [10, 10, 10, 10, 10];
-    expect(smoothElevations(values, 5)).toEqual(values);
-  });
-
-  test("reduces a sharp spike", () => {
-    const values = [0, 0, 100, 0, 0];
-    const smoothed = smoothElevations(values, 3);
-
-    expect(smoothed[2]).toBeLessThan(100);
-    expect(smoothed[2]).toBeGreaterThan(0);
-  });
-});
-
-describe("smoothElevationsByDistance", () => {
-  test("applies smoothing in distance-elevation domain", () => {
-    const distances = [0, 10, 20, 100, 110];
-    const values = [0, 0, 100, 100, 100];
-
-    const smoothed = smoothElevationsByDistance(values, distances, 5);
-
-    expect(smoothed[2]).toBeGreaterThan(0);
-    expect(smoothed[2]).toBeLessThan(100);
-    expect(smoothed[3]).toBeCloseTo(100, 6);
-  });
-});
-
-describe("smoothElevationsByDistanceMeters", () => {
-  test("uses explicit metric radius", () => {
-    const distances = [0, 10, 20, 100, 110];
-    const values = [0, 0, 100, 100, 100];
-
-    const smoothed = smoothElevationsByDistanceMeters(values, distances, 15);
-
-    expect(smoothed[2]).toBeGreaterThan(0);
-    expect(smoothed[2]).toBeLessThan(100);
-    expect(smoothed[3]).toBeCloseTo(100, 6);
-  });
-});
-
 describe("interpolateMaskedElevations", () => {
   test("linearly interpolates masked interior span", () => {
     const source = [100, 150, 999, 999, 250, 300];
@@ -87,8 +44,27 @@ describe("interpolateMaskedElevations", () => {
   });
 });
 
-describe("buildCourseSectionsFromWaypoints", () => {
-  test("builds grade sections from waypoints and elevations", async () => {
+describe("smoothElevationsWithSavitzkyGolay", () => {
+  test("stabilizes tail point with short trailing remainder", () => {
+    const elevations = [0, 0, 100];
+    const distances = [0, 1600, 1608];
+
+    const smoothed = smoothElevationsWithSavitzkyGolay(
+      elevations,
+      distances,
+      20,
+      3,
+      2,
+    );
+
+    // Without guard points this tends to fall back to raw last elevation (=100).
+    // Guard-point smoothing should keep the tail close to the preceding trend.
+    expect(smoothed[2]).toBeLessThan(20);
+  });
+});
+
+describe("buildCourseProfileFromWaypoints", () => {
+  test("builds smoothed profile from waypoints and elevations", async () => {
     const waypoints: GeoPoint[] = [
       { lat: 35.0, lon: 139.0 },
       { lat: 35.001, lon: 139.0 },
@@ -100,21 +76,19 @@ describe("buildCourseSectionsFromWaypoints", () => {
       return offset * 10; // +10m every ~111m => about 9% grade
     });
 
-    const result = await buildCourseSectionsFromWaypoints(waypoints, provider, {
-      smoothingWindow: 1,
-      minimumDistance: 1,
+    const result = await buildCourseProfileFromWaypoints(waypoints, provider, {
       maxAbsGrade: 30,
     });
 
     expect(result.profile).toHaveLength(3);
-    expect(result.sections.length).toBeGreaterThanOrEqual(2);
-    const firstSection = result.sections[0];
-    expect(firstSection).toBeDefined();
-    expect((firstSection as { grade: number }).grade).toBeGreaterThan(8);
-    expect((firstSection as { grade: number }).grade).toBeLessThan(10);
+    const first = result.profile[0];
+    const last = result.profile[result.profile.length - 1];
+    expect(first).toBeDefined();
+    expect(last).toBeDefined();
+    expect((last as { elevation: number }).elevation).toBeGreaterThan((first as { elevation: number }).elevation);
   });
 
-  test("supports legacy minimumDistance as section length alias", async () => {
+  test("profile distances are monotonic", async () => {
     const waypoints: GeoPoint[] = [
       { lat: 35.0, lon: 139.0 },
       { lat: 35.00001, lon: 139.0 },
@@ -123,23 +97,20 @@ describe("buildCourseSectionsFromWaypoints", () => {
     ];
 
     const provider = new FunctionElevationProvider(() => 0);
-    const result = await buildCourseSectionsFromWaypoints(waypoints, provider, {
-      smoothingWindow: 1,
-      minimumDistance: 10,
+    const result = await buildCourseProfileFromWaypoints(waypoints, provider, {
       maxAbsGrade: 30,
     });
 
-    expect(result.sections.length).toBeGreaterThan(1);
-    for (let i = 0; i < result.sections.length - 1; i += 1) {
-      expect(result.sections[i]?.distance).toBeCloseTo(10, 6);
+    expect(result.profile.length).toBeGreaterThan(1);
+    for (let i = 1; i < result.profile.length; i += 1) {
+      const prev = result.profile[i - 1];
+      const curr = result.profile[i];
+      expect((curr as { distanceFromStart: number }).distanceFromStart)
+        .toBeGreaterThanOrEqual((prev as { distanceFromStart: number }).distanceFromStart);
     }
-    const totalDistance = result.sections.reduce((s, x) => s + x.distance, 0);
-    const lastPoint = result.profile[result.profile.length - 1];
-    expect(lastPoint).toBeDefined();
-    expect(totalDistance).toBeCloseTo((lastPoint as { distanceFromStart: number }).distanceFromStart, 6);
   });
 
-  test("creates fixed-length sections independent of waypoint boundaries", async () => {
+  test("keeps profile points for non-uniform waypoint spacing", async () => {
     const waypoints: GeoPoint[] = [
       { lat: 35.0, lon: 139.0 },
       { lat: 35.00017, lon: 139.0 },
@@ -155,20 +126,13 @@ describe("buildCourseSectionsFromWaypoints", () => {
       return dLat * 100_000;
     });
 
-    const result = await buildCourseSectionsFromWaypoints(waypoints, provider, {
-      smoothingWindow: 1,
-      sectionLengthMeters: 100,
+    const result = await buildCourseProfileFromWaypoints(waypoints, provider, {
       maxAbsGrade: 30,
     });
 
-    expect(result.sections.length).toBeGreaterThan(2);
-    for (let i = 0; i < result.sections.length - 1; i += 1) {
-      expect(result.sections[i]?.distance).toBeCloseTo(100, 6);
-    }
-
-    const totalDistance = result.sections.reduce((s, x) => s + x.distance, 0);
+    expect(result.profile.length).toBe(waypoints.length);
     const courseDistance = result.profile[result.profile.length - 1]?.distanceFromStart ?? 0;
-    expect(totalDistance).toBeCloseTo(courseDistance, 6);
+    expect(courseDistance).toBeGreaterThan(0);
   });
 
   test("uses endpoint interpolation for masked (tunnel/bridge) points", async () => {
@@ -186,20 +150,19 @@ describe("buildCourseSectionsFromWaypoints", () => {
       return 160;
     });
 
-    const result = await buildCourseSectionsFromWaypoints(waypoints, provider, {
-      smoothingWindow: 1,
-      minimumDistance: 1,
+    const result = await buildCourseProfileFromWaypoints(waypoints, provider, {
       maxAbsGrade: 40,
     });
 
     expect(result.profile).toHaveLength(4);
     expect(result.profile[1]?.elevationSource).toBe("interpolated");
     expect(result.profile[2]?.elevationSource).toBe("interpolated");
-    // linear interpolation between 100 and 160 across 3 segments
-    expect(result.profile[1]?.elevation).toBeCloseTo(120, 6);
-    expect(result.profile[2]?.elevation).toBeCloseTo(140, 6);
-    expect(result.profile[1]?.rawElevation).toBeCloseTo(120, 6);
-    expect(result.profile[2]?.rawElevation).toBeCloseTo(140, 6);
+    // Savitzky-Golay smoothing produces smoothed values that may differ slightly
+    // from simple linear interpolation due to polynomial fitting
+    expect((result.profile[1]?.elevation ?? 0)).toBeGreaterThan(115);
+    expect((result.profile[1]?.elevation ?? 0)).toBeLessThan(130);
+    expect((result.profile[2]?.elevation ?? 0)).toBeGreaterThan(135);
+    expect((result.profile[2]?.elevation ?? 0)).toBeLessThan(145);
     expect(result.profile[1]?.demElevation).toBe(500);
   });
 });
@@ -229,7 +192,7 @@ describe("CachedElevationProvider", () => {
 });
 
 describe("computeNfdFromWaypoints", () => {
-  test("returns NFD values along with profile and sections", async () => {
+  test("returns NFD values along with profile", async () => {
     const waypoints: GeoPoint[] = [
       { lat: 35.0, lon: 139.0 },
       { lat: 35.001, lon: 139.0 },
@@ -247,13 +210,10 @@ describe("computeNfdFromWaypoints", () => {
     ]);
 
     const result = await computeNfdFromWaypoints(waypoints, provider, lut, {
-      smoothingWindow: 1,
-      minimumDistance: 1,
       maxAbsGrade: 30,
     });
 
     expect(result.profile).toHaveLength(2);
-    expect(result.sections.length).toBeGreaterThan(0);
     expect(result.nfdMeters).toBeGreaterThan(0);
     expect(result.nfdKm).toBeCloseTo(result.nfdMeters / 1000, 10);
   });

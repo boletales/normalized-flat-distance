@@ -47,11 +47,9 @@ export type {
 
 export {
   haversineDistanceMeters,
-  smoothElevations,
-  smoothElevationsByDistance,
-  smoothElevationsByDistanceMeters,
+  smoothElevationsWithSavitzkyGolay,
   parseGsiDemTextTile,
-  buildCourseSectionsFromWaypoints,
+  buildCourseProfileFromWaypoints,
   computeNfdFromWaypoints,
   CachedElevationProvider,
   DEFAULT_GSI_ELEVATION_ENDPOINT,
@@ -60,3 +58,11 @@ export {
   GsiDemTileElevationProvider,
   GsiElevationProvider,
 } from "./course-gradient/analyzer";
+
+export type { ElevationPoint } from "./optimization/smoothing";
+
+export {
+  interpolateElevation,
+  savitzkyGolaySmooth,
+  smoothGradients,
+} from "./optimization/smoothing";

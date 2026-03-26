@@ -15,13 +15,9 @@ import {
 /** @typedef {{lat:number, lon:number}} GeoPoint */
 
 const levelSelect = document.getElementById("levelSelect");
-const smoothingDistanceInput = document.getElementById("smoothingDistance");
-const sectionLengthInput = document.getElementById("sectionLength");
-const maxAbsGradeInput = document.getElementById("maxAbsGrade");
 const analyzeButton = document.getElementById("analyzeButton");
 const clearButton = document.getElementById("clearButton");
 const exportButton = document.getElementById("exportButton");
-const exportInterpolationButton = document.getElementById("exportInterpolationButton");
 const summary = document.getElementById("summary");
 const error = document.getElementById("error");
 const profileCanvas = document.getElementById("profileChart");
@@ -30,8 +26,6 @@ const profileCanvas = document.getElementById("profileChart");
 let latestRouteCoordinates = [];
 /** @type {import("../src/course-gradient/analyzer").RouteProfilePoint[]} */
 let latestProfile = [];
-/** @type {import("../src/types").CourseSection[]} */
-let latestSections = [];
 
 /** @type {Map<string, {segments:Array<{a:GeoPoint,b:GeoPoint}>}>} */
 const tunnelBridgeCache = new Map();
@@ -63,6 +57,11 @@ const hoverMarker = L.circleMarker([35.68, 139.76], {
 });
 
 const initialWaypoints = [];
+
+const FIXED_SG_INTERVAL_METERS = 25;
+const FIXED_SG_WINDOW_SIZE = 11;
+const FIXED_SG_POLYNOMIAL_ORDER = 3;
+const FIXED_MAX_ABS_GRADE = 30;
 
 function showUiError(message) {
   error.textContent = message;
@@ -195,13 +194,11 @@ clearButton.addEventListener("click", () => {
   routingControl.setWaypoints([...initialWaypoints]);
   latestRouteCoordinates = [];
   latestProfile = [];
-  latestSections = [];
   if (chart) {
     chart.data.labels = [];
     chart.data.datasets[0].data = [];
     chart.data.datasets[1].data = [];
     chart.data.datasets[2].data = [];
-    chart.data.datasets[3].data = [];
     chart.update();
   }
   hoverMarker.remove();
@@ -264,37 +261,6 @@ function buildProfileDebugCsv(profile) {
   return lines.join("\n");
 }
 
-function buildSectionsDebugCsv(sections) {
-  const lines = ["index,distance_m,grade_percent"];
-  for (let i = 0; i < sections.length; i += 1) {
-    const s = sections[i];
-    lines.push([i, s.distance, s.grade].map(toCsvCell).join(","));
-  }
-  return lines.join("\n");
-}
-
-function buildInterpolationDebugCsv(profile) {
-  const header = [
-    "緯度 / deg",
-    "経度 / deg",
-    "距離程 / m",
-    "内挿前標高 / m",
-    "内挿後標高 / m",
-  ];
-
-  const lines = [header.map(toCsvCell).join(",")];
-  for (const p of profile) {
-    lines.push([
-      p.lat,
-      p.lon,
-      p.distanceFromStart,
-      p.demElevation ?? p.rawElevation,
-      p.rawElevation,
-    ].map(toCsvCell).join(","));
-  }
-  return lines.join("\n");
-}
-
 exportButton?.addEventListener("click", () => {
   if (!latestProfile.length) {
     showUiError("先に解析を実行してください。出力対象データがありません。");
@@ -305,26 +271,6 @@ exportButton?.addEventListener("click", () => {
   triggerDownload(
     `nfd-profile-debug-${timestamp}.csv`,
     buildProfileDebugCsv(latestProfile),
-    "text/csv;charset=utf-8",
-  );
-  triggerDownload(
-    `nfd-sections-debug-${timestamp}.csv`,
-    buildSectionsDebugCsv(latestSections),
-    "text/csv;charset=utf-8",
-  );
-  clearUiError();
-});
-
-exportInterpolationButton?.addEventListener("click", () => {
-  if (!latestProfile.length) {
-    showUiError("先に解析を実行してください。出力対象データがありません。");
-    return;
-  }
-
-  const timestamp = new Date().toISOString().replace(/[.:]/g, "-");
-  triggerDownload(
-    `nfd-interpolation-debug-${timestamp}.csv`,
-    buildInterpolationDebugCsv(latestProfile),
     "text/csv;charset=utf-8",
   );
   clearUiError();
@@ -355,18 +301,6 @@ const chart = new Chart(profileCanvas, {
         borderWidth: 2,
         pointRadius: 0,
         tension: 0.1,
-      },
-      {
-        label: "セクション境界",
-        data: [],
-        type: "scatter",
-        yAxisID: "y",
-        borderColor: "#1570ef",
-        backgroundColor: "#1570ef",
-        borderWidth: 1,
-        showLine: false,
-        pointRadius: 2.5,
-        pointHoverRadius: 4,
       },
       {
         label: "勾配 [%]",
@@ -634,13 +568,11 @@ function markTunnelBridgeInterpolation(points, segments, thresholdMeters = 20) {
 
 /**
  * @param {import("../src/course-gradient/analyzer").RouteProfilePoint[]} profile
- * @param {import("../src/types").CourseSection[]} sections
  */
-function buildChartData(profile, sections) {
+function buildChartData(profile) {
   const rawElevationSeries = [];
   const smoothedElevationSeries = [];
-  const sectionBoundaryPoints = [];
-  const sectionGradeSeries = [];
+  const gradeSeries = [];
 
   for (let i = 0; i < profile.length; i += 1) {
     const current = profile[i];
@@ -651,53 +583,29 @@ function buildChartData(profile, sections) {
 
   }
 
-  let accumulated = 0;
-  const findNearestProfilePointByDistance = (distanceMeters) => {
-    if (!profile.length) {
-      return null;
-    }
-    let nearest = profile[0] ?? null;
-    let minAbs = Number.POSITIVE_INFINITY;
-    for (const p of profile) {
-      const d = Math.abs(p.distanceFromStart - distanceMeters);
-      if (d < minAbs) {
-        minAbs = d;
-        nearest = p;
-      }
-    }
-    return nearest;
-  };
-
-  if (profile.length > 0) {
-    const first = profile[0];
-    if (first) {
-      sectionBoundaryPoints.push({ x: 0, y: first.elevation });
-    }
-  }
-
-  for (const section of sections) {
-    const d = section.distance;
-    const start = accumulated;
-    const end = accumulated + d;
-    const mid = (start + end) / 2;
-    sectionGradeSeries.push({ x: mid / 1000, y: section.grade });
-
-    const boundaryPoint = findNearestProfilePointByDistance(end);
-    if (boundaryPoint) {
-      sectionBoundaryPoints.push({
-        x: end / 1000,
-        y: boundaryPoint.elevation,
-      });
+  // 勾配は「平滑化済み標高」を距離で差分して生成する
+  for (let i = 1; i < profile.length; i += 1) {
+    const prev = profile[i - 1];
+    const curr = profile[i];
+    if (!prev || !curr) {
+      continue;
     }
 
-    accumulated = end;
+    const distance = curr.distanceFromStart - prev.distanceFromStart;
+    if (distance <= 0) {
+      continue;
+    }
+
+    const elevationDiff = curr.elevation - prev.elevation;
+    const grade = (elevationDiff / distance) * 100;
+    const midX = (prev.distanceFromStart + curr.distanceFromStart) / 2000;
+    gradeSeries.push({ x: midX, y: grade });
   }
 
   return {
     rawElevationSeries,
     smoothedElevationSeries,
-    sectionBoundaryPoints,
-    sectionGradeSeries,
+    gradeSeries,
   };
 }
 
@@ -713,9 +621,6 @@ analyzeButton.addEventListener("click", async () => {
     analyzeButton.textContent = "解析中...";
 
     const level = levelSelect.value;
-    const smoothingDistanceMeters = Number(smoothingDistanceInput.value);
-    const sectionLengthMeters = Number(sectionLengthInput.value);
-    const maxAbsGrade = Number(maxAbsGradeInput.value);
 
     const sampledCoordinates = downsample(latestRouteCoordinates, 2500);
     const lut = getOrBuildLut(level);
@@ -732,30 +637,32 @@ analyzeButton.addEventListener("click", async () => {
       console.warn("Failed to fetch tunnel/bridge geometries:", osmError);
     }
 
+    // Build options for Savitzky-Golay smoothing (only method now)
+    const analysisOptions = {
+      maxAbsGrade: FIXED_MAX_ABS_GRADE,
+      useSavitzkyGolay: true,
+      savitzkyGolayInterval: FIXED_SG_INTERVAL_METERS,
+      savitzkyGolayWindowSize: FIXED_SG_WINDOW_SIZE,
+      savitzkyGolayPolynomialOrder: FIXED_SG_POLYNOMIAL_ORDER,
+    };
+
     const result = await computeNfdFromWaypoints(
       coordinatesForAnalysis,
       tileProvider,
       lut,
-      {
-        smoothingDistanceMeters,
-        sectionLengthMeters,
-        maxAbsGrade,
-      },
+      analysisOptions,
     );
 
     latestProfile = result.profile;
-  latestSections = result.sections;
 
     const {
       rawElevationSeries,
       smoothedElevationSeries,
-      sectionBoundaryPoints,
-      sectionGradeSeries,
-    } = buildChartData(result.profile, result.sections);
+      gradeSeries,
+    } = buildChartData(result.profile);
     chart.data.datasets[0].data = rawElevationSeries;
     chart.data.datasets[1].data = smoothedElevationSeries;
-    chart.data.datasets[2].data = sectionBoundaryPoints;
-    chart.data.datasets[3].data = sectionGradeSeries;
+    chart.data.datasets[2].data = gradeSeries;
     chart.update();
 
     const actualDistanceMeters = result.profile[result.profile.length - 1]?.distanceFromStart ?? 0;
@@ -765,7 +672,6 @@ analyzeButton.addEventListener("click", async () => {
       `実距離: ${(actualDistanceMeters / 1000).toFixed(2)} km`,
       `NFD: ${result.nfdKm.toFixed(2)} km`,
       `NFD/実距離: ${(actualDistanceMeters > 0 ? result.nfdMeters / actualDistanceMeters : 0).toFixed(3)}`,
-      `セクション数: ${result.sections.length.toLocaleString()}`,
       `内挿点(トンネル/橋推定): ${interpolationMarkedCount.toLocaleString()} 点`,
       `タイルキャッシュ: ${tileProvider.size.toLocaleString()} 枚`,
     ].join("<br>");
