@@ -18,7 +18,6 @@ const levelSelect = document.getElementById("levelSelect");
 const analyzeButton = document.getElementById("analyzeButton");
 const clearButton = document.getElementById("clearButton");
 const exportButton = document.getElementById("exportButton");
-const exportGpxButton = document.getElementById("exportGpxButton");
 const swapSgButton = document.getElementById("swapSgButton");
 const summary = document.getElementById("summary");
 const error = document.getElementById("error");
@@ -67,11 +66,13 @@ const FIXED_MAX_ABS_GRADE = 30;
 const POLYLINE_DRAG_HIT_TOLERANCE_METERS = 20;
 const POLYLINE_DRAG_MOVE_THRESHOLD_METERS = 8;
 const DOM_DRAG_MOVE_THRESHOLD_PX = 6;
-const CLICK_SUPPRESS_WINDOW_MS = 350;
+const CLICK_SUPPRESS_WINDOW_MS = 220;
+const CLICK_SUPPRESS_RADIUS_PX = 18;
 const ENABLE_ROUTE_DEBUG_LOG = true;
 
 let suppressNextMapClick = false;
 let suppressMapClickUntilMs = 0;
+let suppressMapClickClientPoint = null;
 const polylineDragState = {
   active: false,
   startLatLng: null,
@@ -96,14 +97,36 @@ function debugLog(eventName, payload = {}) {
   });
 }
 
-function suppressMapClickTemporarily(reason, windowMs = CLICK_SUPPRESS_WINDOW_MS) {
-  suppressNextMapClick = true;
+function suppressMapClickTemporarily(
+  reason,
+  {
+    windowMs = CLICK_SUPPRESS_WINDOW_MS,
+    setNextClickFlag = false,
+    clientX = null,
+    clientY = null,
+  } = {},
+) {
+  if (setNextClickFlag) {
+    suppressNextMapClick = true;
+  }
   suppressMapClickUntilMs = Math.max(suppressMapClickUntilMs, performance.now() + windowMs);
+  if (typeof clientX === "number" && typeof clientY === "number") {
+    suppressMapClickClientPoint = { x: clientX, y: clientY };
+  }
   debugLog("map.click:suppress-window", {
     reason,
     windowMs,
+    setNextClickFlag,
+    suppressMapClickClientPoint,
     suppressMapClickUntilMs: Number(suppressMapClickUntilMs.toFixed(1)),
   });
+}
+
+function isLeafletInteractiveTarget(target) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+  return target.classList.contains("leaflet-interactive");
 }
 
 function showUiError(message) {
@@ -388,8 +411,11 @@ mapContainer.addEventListener("pointerup", (ev) => {
     targetClass: ev.target?.className ?? "",
   });
 
-  if (domDragState.moved) {
-    suppressMapClickTemporarily("dom-pointer-drag");
+  if (domDragState.moved && isLeafletInteractiveTarget(ev.target)) {
+    suppressMapClickTemporarily("dom-pointer-drag-interactive", {
+      clientX: ev.clientX,
+      clientY: ev.clientY,
+    });
   }
 
   domDragState.active = false;
@@ -410,15 +436,28 @@ mapContainer.addEventListener("pointercancel", () => {
 map.on("click", (e) => {
   const now = performance.now();
   const inSuppressWindow = now < suppressMapClickUntilMs;
+  const clickClientX = typeof e.originalEvent?.clientX === "number" ? e.originalEvent.clientX : null;
+  const clickClientY = typeof e.originalEvent?.clientY === "number" ? e.originalEvent.clientY : null;
+  let inSuppressRadius = true;
+  if (suppressMapClickClientPoint && clickClientX !== null && clickClientY !== null) {
+    const dx = clickClientX - suppressMapClickClientPoint.x;
+    const dy = clickClientY - suppressMapClickClientPoint.y;
+    inSuppressRadius = Math.hypot(dx, dy) <= CLICK_SUPPRESS_RADIUS_PX;
+  }
+  const shouldSuppressByWindow = inSuppressWindow && inSuppressRadius;
   debugLog("map.click:start", {
     suppressNextMapClick,
     inSuppressWindow,
+    inSuppressRadius,
+    shouldSuppressByWindow,
+    clickClientX,
+    clickClientY,
     lat: Number(e.latlng.lat.toFixed(6)),
     lng: Number(e.latlng.lng.toFixed(6)),
   });
-  if (suppressNextMapClick || inSuppressWindow) {
+  if (suppressNextMapClick || shouldSuppressByWindow) {
     debugLog("map.click:suppressed", {
-      reason: suppressNextMapClick ? "flag" : "window",
+      reason: suppressNextMapClick ? "flag" : "window+radius",
       lat: Number(e.latlng.lat.toFixed(6)),
       lng: Number(e.latlng.lng.toFixed(6)),
     });
@@ -509,11 +548,14 @@ map.on("mouseup", (e) => {
 
   // ドラッグ操作後に Leaflet の click が連鎖してゴール更新されるのを防ぐ
   if (shouldInsert) {
-    suppressMapClickTemporarily("polyline-drag-insert");
+    const mouseUpClientX = typeof e.originalEvent?.clientX === "number" ? e.originalEvent.clientX : null;
+    const mouseUpClientY = typeof e.originalEvent?.clientY === "number" ? e.originalEvent.clientY : null;
+    suppressMapClickTemporarily("polyline-drag-insert", {
+      setNextClickFlag: true,
+      clientX: mouseUpClientX,
+      clientY: mouseUpClientY,
+    });
     debugLog("map.mouseup:suppress-next-click", { shouldInsert });
-    if (e.originalEvent) {
-      L.DomEvent.stop(e.originalEvent);
-    }
   }
 
   if (!shouldInsert || latestRouteCoordinates.length < 2) {
@@ -638,41 +680,6 @@ function buildProfileDebugCsv(profile) {
   return lines.join("\n");
 }
 
-function escapeXmlText(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function buildProfileGpx(profile) {
-  const generatedIso = new Date().toISOString();
-  const trkptLines = profile.map((p) => {
-    const lat = Number(p.lat).toFixed(7);
-    const lon = Number(p.lon).toFixed(7);
-    const ele = Number(p.elevation).toFixed(2);
-    return `      <trkpt lat="${lat}" lon="${lon}"><ele>${ele}</ele></trkpt>`;
-  });
-
-  return [
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-    "<gpx version=\"1.1\" creator=\"NFD Pilot Viewer\" xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\">",
-    "  <metadata>",
-    `    <name>${escapeXmlText("NFD Smoothed Elevation Track")}</name>`,
-    `    <time>${generatedIso}</time>`,
-    "  </metadata>",
-    "  <trk>",
-    `    <name>${escapeXmlText("NFD Route (Smoothed Elevation)")}</name>`,
-    "    <trkseg>",
-    ...trkptLines,
-    "    </trkseg>",
-    "  </trk>",
-    "</gpx>",
-  ].join("\n");
-}
-
 exportButton?.addEventListener("click", () => {
   if (!latestProfile.length) {
     showUiError("先に解析を実行してください。出力対象データがありません。");
@@ -684,21 +691,6 @@ exportButton?.addEventListener("click", () => {
     `nfd-profile-debug-${timestamp}.csv`,
     buildProfileDebugCsv(latestProfile),
     "text/csv;charset=utf-8",
-  );
-  clearUiError();
-});
-
-exportGpxButton?.addEventListener("click", () => {
-  if (!latestProfile.length) {
-    showUiError("先に解析を実行してください。出力対象データがありません。");
-    return;
-  }
-
-  const timestamp = new Date().toISOString().replace(/[.:]/g, "-");
-  triggerDownload(
-    `nfd-profile-smoothed-${timestamp}.gpx`,
-    buildProfileGpx(latestProfile),
-    "application/gpx+xml;charset=utf-8",
   );
   clearUiError();
 });
