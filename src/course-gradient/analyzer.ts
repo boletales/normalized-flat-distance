@@ -612,6 +612,10 @@ export const DEFAULT_GSI_DEM_TILE_TEMPLATES = [
   "https://cyberjapandata.gsi.go.jp/xyz/dem/{z}/{x}/{y}.txt",
 ] as const;
 
+function isGsiDem10Template(template: string): boolean {
+  return template.includes("/dem/{z}/") && !template.includes("/dem5");
+}
+
 /**
  * Options for tile-based GSI DEM provider.
  */
@@ -690,28 +694,45 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
   }
 
   async getElevation(point: GeoPoint): Promise<number> {
-    const tileXFloat = lonToTileX(point.lon, this.zoom);
-    const tileYFloat = latToTileY(point.lat, this.zoom);
-
-    const n = 2 ** this.zoom;
-    const tileX = clampInteger(Math.floor(tileXFloat), 0, n - 1);
-    const tileY = clampInteger(Math.floor(tileYFloat), 0, n - 1);
-
-    const pixelXFloat = (tileXFloat - tileX) * DEM_TILE_SIZE;
-    const pixelYFloat = (tileYFloat - tileY) * DEM_TILE_SIZE;
-    const pixelX = clampInteger(Math.floor(pixelXFloat), 0, DEM_TILE_SIZE - 1);
-    const pixelY = clampInteger(Math.floor(pixelYFloat), 0, DEM_TILE_SIZE - 1);
-
-    const availableTiles: Array<{ template: string; tile: DemTile }> = [];
+    const availableTiles: Array<{
+      template: string;
+      templateZoom: number;
+      tileX: number;
+      tileY: number;
+      pixelX: number;
+      pixelY: number;
+      tile: DemTile;
+    }> = [];
 
     // Phase 1: Prefer exact pixel match, but first try all DEM templates.
     for (const template of this.tileTemplates) {
-      const tile = await this.getTile(template, tileX, tileY);
+      const templateZoom = this.resolveTemplateZoom(template);
+      const tileXFloat = lonToTileX(point.lon, templateZoom);
+      const tileYFloat = latToTileY(point.lat, templateZoom);
+
+      const n = 2 ** templateZoom;
+      const tileX = clampInteger(Math.floor(tileXFloat), 0, n - 1);
+      const tileY = clampInteger(Math.floor(tileYFloat), 0, n - 1);
+
+      const pixelXFloat = (tileXFloat - tileX) * DEM_TILE_SIZE;
+      const pixelYFloat = (tileYFloat - tileY) * DEM_TILE_SIZE;
+      const pixelX = clampInteger(Math.floor(pixelXFloat), 0, DEM_TILE_SIZE - 1);
+      const pixelY = clampInteger(Math.floor(pixelYFloat), 0, DEM_TILE_SIZE - 1);
+
+      const tile = await this.getTile(template, templateZoom, tileX, tileY);
       if (tile === null) {
         continue;
       }
 
-      availableTiles.push({ template, tile });
+      availableTiles.push({
+        template,
+        templateZoom,
+        tileX,
+        tileY,
+        pixelX,
+        pixelY,
+        tile,
+      });
 
       const exact = demValueAt(tile, pixelX, pixelY);
       if (exact !== undefined) {
@@ -721,7 +742,7 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
 
     // Phase 2: If exact match is unavailable across templates,
     // allow nearest finite value search in the current tile.
-    for (const { tile } of availableTiles) {
+    for (const { tile, pixelX, pixelY } of availableTiles) {
       const value = findNearestFiniteDemValue(tile, pixelX, pixelY);
       if (value !== undefined) {
         return value;
@@ -729,9 +750,17 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
     }
 
     // Phase 3: Expand search to nearby tiles.
-    for (const { template } of availableTiles) {
+    for (const {
+      template,
+      templateZoom,
+      tileX,
+      tileY,
+      pixelX,
+      pixelY,
+    } of availableTiles) {
       const nearby = await this.findNearbyValueAcrossTiles(
         template,
+        templateZoom,
         tileX,
         tileY,
         pixelX,
@@ -751,12 +780,13 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
 
   private async findNearbyValueAcrossTiles(
     template: string,
+    zoom: number,
     baseTileX: number,
     baseTileY: number,
     basePixelX: number,
     basePixelY: number,
   ): Promise<number | undefined> {
-    const n = 2 ** this.zoom;
+    const n = 2 ** zoom;
 
     for (let tileRadius = 1; tileRadius <= this.noDataTileSearchRadius; tileRadius += 1) {
       for (let dy = -tileRadius; dy <= tileRadius; dy += 1) {
@@ -771,7 +801,7 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
             continue;
           }
 
-          const tile = await this.getTile(template, tileX, tileY);
+          const tile = await this.getTile(template, zoom, tileX, tileY);
           if (tile === null) {
             continue;
           }
@@ -817,10 +847,11 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
 
   private async getTile(
     template: string,
+    zoom: number,
     tileX: number,
     tileY: number,
   ): Promise<DemTile | null> {
-    const cacheKey = `${template}|${this.zoom}|${tileX}|${tileY}`;
+    const cacheKey = `${template}|${zoom}|${tileX}|${tileY}`;
     const now = Date.now();
 
     const cached = this.tileCache.get(cacheKey);
@@ -833,7 +864,7 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
       return inFlight;
     }
 
-    const requestPromise = this.fetchTileAndCache(cacheKey, template, tileX, tileY, now);
+    const requestPromise = this.fetchTileAndCache(cacheKey, template, zoom, tileX, tileY, now);
     this.inFlightTileRequests.set(cacheKey, requestPromise);
 
     try {
@@ -846,13 +877,14 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
   private async fetchTileAndCache(
     cacheKey: string,
     template: string,
+    zoom: number,
     tileX: number,
     tileY: number,
     now: number,
   ): Promise<DemTile | null> {
 
     const url = template
-      .replace("{z}", String(this.zoom))
+      .replace("{z}", String(zoom))
       .replace("{x}", String(tileX))
       .replace("{y}", String(tileY));
 
@@ -871,6 +903,13 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
     const tile = parseGsiDemTextTile(text);
     this.putTileCache(cacheKey, tile, now);
     return tile;
+  }
+
+  private resolveTemplateZoom(template: string): number {
+    if (isGsiDem10Template(template)) {
+      return Math.max(0, this.zoom - 1);
+    }
+    return this.zoom;
   }
 
   private putTileCache(key: string, tile: DemTile | null, now: number): void {
