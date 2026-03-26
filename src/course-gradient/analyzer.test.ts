@@ -309,6 +309,56 @@ describe("GsiDemTileElevationProvider", () => {
     expect(requestCount).toBe(2);
   });
 
+  test("uses lower zoom only for DEM10 fallback template", async () => {
+    const requestedUrls: string[] = [];
+    const tileText = createUniformDemTileText(64);
+
+    const fetchFn: typeof fetch = (async (url: string | URL | Request) => {
+      const urlText = String(url);
+      requestedUrls.push(urlText);
+
+      if (urlText.includes("dem5a")) {
+        return {
+          ok: false,
+          status: 404,
+          statusText: "Not Found",
+          text: async () => "",
+        } as Response;
+      }
+
+      if (urlText.includes("dem/") && urlText.includes("/14/")) {
+        return {
+          ok: true,
+          text: async () => tileText,
+        } as Response;
+      }
+
+      return {
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        text: async () => "",
+      } as Response;
+    }) as typeof fetch;
+
+    const provider = new GsiDemTileElevationProvider({
+      fetchFn,
+      zoom: 15,
+      maxTiles: 16,
+      cacheTtlMs: 60_000,
+      tileTemplates: [
+        "https://example.com/dem5a/{z}/{x}/{y}.txt",
+        "https://example.com/dem/{z}/{x}/{y}.txt",
+      ],
+    });
+
+    const elevation = await provider.getElevation({ lat: 35.0, lon: 139.0 });
+
+    expect(elevation).toBe(64);
+    expect(requestedUrls.some((u) => u.includes("dem5a") && u.includes("/15/"))).toBe(true);
+    expect(requestedUrls.some((u) => u.includes("dem/") && u.includes("/14/"))).toBe(true);
+  });
+
   test("checks same pixel in next template before nearest search in first template", async () => {
     const target = { lat: 35.70825, lon: 139.79742 };
     const zoom = 15;
@@ -325,7 +375,7 @@ describe("GsiDemTileElevationProvider", () => {
     ) * n) - tileY) * 256);
 
     const rows5a = new Array<string>(256)
-      .fill(0)
+      .fill("")
       .map(() => new Array<string>(256).fill("e").join(","));
     // Keep the target pixel as no-data but place a nearby finite value.
     rows5a[Math.max(0, pixelY - 1)] = new Array<string>(256)

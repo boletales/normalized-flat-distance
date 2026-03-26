@@ -26,6 +26,9 @@ const etaInput = document.getElementById("etaInput");
 const analyzeButton = document.getElementById("analyzeButton");
 const clearButton = document.getElementById("clearButton");
 const exportButton = document.getElementById("exportButton");
+const exportWaypointsButton = document.getElementById("exportWaypointsButton");
+const importWaypointsButton = document.getElementById("importWaypointsButton");
+const importWaypointsInput = document.getElementById("importWaypointsInput");
 const swapSgButton = document.getElementById("swapSgButton");
 const summary = document.getElementById("summary");
 const error = document.getElementById("error");
@@ -302,7 +305,7 @@ const routingControl = L.Routing.control({
   },
   routeWhileDragging: true,
   addWaypoints: true,
-  fitSelectedRoutes: true,
+  fitSelectedRoutes: false,
   showAlternatives: false,
   show: false,
   draggableWaypoints: true,
@@ -689,6 +692,51 @@ function buildProfileDebugCsv(profile) {
   return lines.join("\n");
 }
 
+function buildWaypointsJson(waypoints) {
+  return JSON.stringify(
+    waypoints.map((p) => ({
+      lat: Number(p.lat.toFixed(7)),
+      lon: Number(p.lng.toFixed(7)),
+    })),
+    null,
+    2,
+  );
+}
+
+function parseWaypointArrayJson(jsonText) {
+  const parsed = JSON.parse(jsonText);
+  if (!Array.isArray(parsed)) {
+    throw new Error("JSONのトップレベルは配列である必要があります。");
+  }
+
+  if (parsed.length < 2) {
+    throw new Error("ウェイポイントは2点以上必要です。");
+  }
+
+  const nextWaypoints = parsed.map((item, idx) => {
+    if (!item || typeof item !== "object") {
+      throw new Error(`要素 ${idx} はオブジェクトである必要があります。`);
+    }
+
+    const lat = typeof item.lat === "number" ? item.lat : NaN;
+    const lonValue = typeof item.lon === "number"
+      ? item.lon
+      : (typeof item.lng === "number" ? item.lng : NaN);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lonValue)) {
+      throw new Error(`要素 ${idx} の lat/lon が不正です。`);
+    }
+
+    if (lat < -90 || lat > 90 || lonValue < -180 || lonValue > 180) {
+      throw new Error(`要素 ${idx} の緯度経度が範囲外です。`);
+    }
+
+    return L.latLng(lat, lonValue);
+  });
+
+  return nextWaypoints;
+}
+
 exportButton?.addEventListener("click", () => {
   if (!latestProfile.length) {
     showUiError("先に解析を実行してください。出力対象データがありません。");
@@ -702,6 +750,47 @@ exportButton?.addEventListener("click", () => {
     "text/csv;charset=utf-8",
   );
   clearUiError();
+});
+
+exportWaypointsButton?.addEventListener("click", () => {
+  const waypoints = getCurrentWaypoints();
+  if (waypoints.length < 2) {
+    showUiError("出力するウェイポイントがありません。2点以上設定してください。");
+    return;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[.:]/g, "-");
+  triggerDownload(
+    `nfd-waypoints-${timestamp}.json`,
+    buildWaypointsJson(waypoints),
+    "application/json;charset=utf-8",
+  );
+  clearUiError();
+});
+
+importWaypointsButton?.addEventListener("click", () => {
+  importWaypointsInput?.click();
+});
+
+importWaypointsInput?.addEventListener("change", async () => {
+  const file = importWaypointsInput.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  try {
+    const text = await file.text();
+    const importedWaypoints = parseWaypointArrayJson(text);
+    setWaypointsAndClearError(importedWaypoints);
+    latestRouteCoordinates = [];
+    latestProfile = [];
+    summary.textContent = "ウェイポイント配列を読み込みました。ルートが更新されたら「解析」を押してください。";
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    showUiError(`ウェイポイント配列の読込に失敗しました: ${message}`);
+  } finally {
+    importWaypointsInput.value = "";
+  }
 });
 
 const chart = new Chart(profileCanvas, {
@@ -1103,6 +1192,22 @@ function markTunnelBridgeInterpolation(points, segments, thresholdMeters = 20) {
 
 /**
  * @param {import("../src/course-gradient/analyzer").RouteProfilePoint[]} profile
+ * @returns {number} Total elevation gain in meters
+ */
+function calculateElevationGain(profile) {
+  let totalGain = 0;
+  for (let i = 1; i < profile.length; i += 1) {
+    const prev = profile[i - 1];
+    const curr = profile[i];
+    if (curr && curr.elevation > prev?.elevation) {
+      totalGain += curr.elevation - prev.elevation;
+    }
+  }
+  return totalGain;
+}
+
+/**
+ * @param {import("../src/course-gradient/analyzer").RouteProfilePoint[]} profile
  */
 function buildChartData(profile) {
   const rawElevationSeries = [];
@@ -1200,12 +1305,14 @@ analyzeButton.addEventListener("click", async () => {
     chart.update();
 
     const actualDistanceMeters = result.profile[result.profile.length - 1]?.distanceFromStart ?? 0;
+    const elevationGainMeters = calculateElevationGain(result.profile);
 
     const nfdLines = buildNfdSummaryLines(result.profile, cyclistParams, result.nfdKm);
 
     summary.innerHTML = [
       `入力点数: ${sampledCoordinates.length.toLocaleString()} 点`,
       `実距離: ${(actualDistanceMeters / 1000).toFixed(2)} km`,
+      `獲得標高: ${elevationGainMeters.toFixed(0)} m`,
       ...nfdLines,
       `NFD/実距離: ${(actualDistanceMeters > 0 ? result.nfdMeters / actualDistanceMeters : 0).toFixed(3)}`,
       `内挿点(トンネル/橋推定): ${interpolationMarkedCount.toLocaleString()} 点`,
