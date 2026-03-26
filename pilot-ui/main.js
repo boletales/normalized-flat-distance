@@ -18,6 +18,7 @@ const levelSelect = document.getElementById("levelSelect");
 const analyzeButton = document.getElementById("analyzeButton");
 const clearButton = document.getElementById("clearButton");
 const exportButton = document.getElementById("exportButton");
+const exportGpxButton = document.getElementById("exportGpxButton");
 const swapSgButton = document.getElementById("swapSgButton");
 const summary = document.getElementById("summary");
 const error = document.getElementById("error");
@@ -637,6 +638,41 @@ function buildProfileDebugCsv(profile) {
   return lines.join("\n");
 }
 
+function escapeXmlText(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function buildProfileGpx(profile) {
+  const generatedIso = new Date().toISOString();
+  const trkptLines = profile.map((p) => {
+    const lat = Number(p.lat).toFixed(7);
+    const lon = Number(p.lon).toFixed(7);
+    const ele = Number(p.elevation).toFixed(2);
+    return `      <trkpt lat="${lat}" lon="${lon}"><ele>${ele}</ele></trkpt>`;
+  });
+
+  return [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<gpx version=\"1.1\" creator=\"NFD Pilot Viewer\" xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\">",
+    "  <metadata>",
+    `    <name>${escapeXmlText("NFD Smoothed Elevation Track")}</name>`,
+    `    <time>${generatedIso}</time>`,
+    "  </metadata>",
+    "  <trk>",
+    `    <name>${escapeXmlText("NFD Route (Smoothed Elevation)")}</name>`,
+    "    <trkseg>",
+    ...trkptLines,
+    "    </trkseg>",
+    "  </trk>",
+    "</gpx>",
+  ].join("\n");
+}
+
 exportButton?.addEventListener("click", () => {
   if (!latestProfile.length) {
     showUiError("先に解析を実行してください。出力対象データがありません。");
@@ -648,6 +684,21 @@ exportButton?.addEventListener("click", () => {
     `nfd-profile-debug-${timestamp}.csv`,
     buildProfileDebugCsv(latestProfile),
     "text/csv;charset=utf-8",
+  );
+  clearUiError();
+});
+
+exportGpxButton?.addEventListener("click", () => {
+  if (!latestProfile.length) {
+    showUiError("先に解析を実行してください。出力対象データがありません。");
+    return;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[.:]/g, "-");
+  triggerDownload(
+    `nfd-profile-smoothed-${timestamp}.gpx`,
+    buildProfileGpx(latestProfile),
+    "application/gpx+xml;charset=utf-8",
   );
   clearUiError();
 });
