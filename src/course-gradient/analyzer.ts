@@ -283,6 +283,12 @@ function computeNfdFromProfile(
 
 /**
  * Convert waypoints to a smoothed grade profile.
+ *
+ * Process:
+ * 1. Exclude waypoints marked with `interpolateElevation = true` (tunnel/bridge points).
+ * 2. Get elevations for valid waypoints only.
+ * 3. Apply Savitzky-Golay smoothing at regular intervals.
+ * 4. Return regular-interval profile (not resampled to original waypoint positions).
  */
 export async function buildCourseProfileFromWaypoints(
   waypoints: GeoPoint[],
@@ -293,11 +299,29 @@ export async function buildCourseProfileFromWaypoints(
     return { profile: [] };
   }
 
-  const distancesFromStart = new Array<number>(waypoints.length).fill(0);
+  // Step 1: Filter out waypoints marked for exclusion (tunnel/bridge points).
+  const validIndices: number[] = [];
+  const validWaypoints: GeoPoint[] = [];
+  for (let i = 0; i < waypoints.length; i += 1) {
+    const wp = waypoints[i];
+    // Exclude if interpolateElevation is explicitly true
+    if (wp && wp.interpolateElevation !== true) {
+      validIndices.push(i);
+      validWaypoints.push(wp);
+    }
+  }
+
+  // If fewer than 2 valid waypoints remain, return empty profile.
+  if (validWaypoints.length < 2) {
+    return { profile: [] };
+  }
+
+  // Step 2: Compute cumulative distances for valid waypoints.
+  const distancesFromStart = new Array<number>(validWaypoints.length).fill(0);
   let cumulativeDistance = 0;
-  for (let i = 1; i < waypoints.length; i += 1) {
-    const prev = waypoints[i - 1];
-    const curr = waypoints[i];
+  for (let i = 1; i < validWaypoints.length; i += 1) {
+    const prev = validWaypoints[i - 1];
+    const curr = validWaypoints[i];
     if (prev === undefined || curr === undefined) {
       continue;
     }
@@ -305,81 +329,182 @@ export async function buildCourseProfileFromWaypoints(
     distancesFromStart[i] = cumulativeDistance;
   }
 
+  // Step 3: Fetch elevations for valid waypoints.
   const rawElevations = await Promise.all(
-    waypoints.map((point) => elevationProvider.getElevation(point)),
+    validWaypoints.map((point) => elevationProvider.getElevation(point)),
   );
 
-  const interpolationMask = waypoints.map((point) => point.interpolateElevation === true);
-  const {
-    elevations: interpolatedRawElevations,
-    interpolatedMask,
-  } = interpolateMaskedElevations(rawElevations, interpolationMask);
-
+  // Step 4: Apply Savitzky-Golay smoothing to get regular-interval profile.
   const {
     savitzkyGolayInterval = 20,
     savitzkyGolayWindowSize = 11,
     savitzkyGolayPolynomialOrder = 3,
   } = options;
 
-  const smoothedElevations = smoothElevationsWithSavitzkyGolay(
-    interpolatedRawElevations,
+  const profile = buildRegularIntervalProfile(
+    validWaypoints,
+    rawElevations,
     distancesFromStart,
     savitzkyGolayInterval,
     savitzkyGolayWindowSize,
     savitzkyGolayPolynomialOrder,
   );
 
-  const profile: RouteProfilePoint[] = [];
-  let cumulative = 0;
+  return { profile };
+}
 
-  const firstWaypoint = waypoints[0];
-  const firstRawElevation = rawElevations[0];
-  const firstSmoothedElevation = smoothedElevations[0];
-  if (
-    firstWaypoint === undefined
-    || firstRawElevation === undefined
-    || firstSmoothedElevation === undefined
-  ) {
-    return { profile: [] };
+/**
+ * Build a profile at regular distance intervals from smoothed elevations.
+ *
+ * - Interpolates elevations at regular intervals.
+ * - Applies Savitzky-Golay smoothing.
+ * - Returns profile points at regular intervals (no resampling to original waypoints).
+ */
+function buildRegularIntervalProfile(
+  waypoints: GeoPoint[],
+  elevations: number[],
+  distancesFromStart: number[],
+  interval: number,
+  windowSize: number,
+  polynomialOrder: 2 | 3,
+): RouteProfilePoint[] {
+  if (waypoints.length === 0 || elevations.length === 0) {
+    return [];
   }
 
-  profile.push({
-    ...firstWaypoint,
-    rawElevation: interpolatedRawElevations[0] as number,
-    demElevation: firstRawElevation,
-    elevation: firstSmoothedElevation,
-    distanceFromStart: 0,
-    elevationSource: interpolatedMask[0] ? "interpolated" : "dem",
-  });
+  // Apply Savitzky-Golay smoothing with regular interpolation.
+  const interpolatedElevations = interpolateElevationAtRegularIntervals(
+    elevations,
+    distancesFromStart,
+    interval,
+  );
 
-  for (let i = 1; i < waypoints.length; i += 1) {
-    const previousWaypoint = waypoints[i - 1];
-    const currentWaypoint = waypoints[i];
-    const rawElevation = rawElevations[i];
-    const smoothedElevation = smoothedElevations[i];
-    if (
-      previousWaypoint === undefined
-      || currentWaypoint === undefined
-      || rawElevation === undefined
-      || smoothedElevation === undefined
-    ) {
+  if (interpolatedElevations.length === 0) {
+    return [];
+  }
+
+  // Apply Savitzky-Golay filter to smoothed data.
+  const smoothedElevations = savitzkyGolaySmooth(
+    interpolatedElevations.map((p) => p.elevation),
+    windowSize,
+    polynomialOrder,
+  );
+
+  // Build profile from regular-interval points.
+  const profile: RouteProfilePoint[] = [];
+  const maxDistance = distancesFromStart[distancesFromStart.length - 1] ?? 0;
+
+  // Find first and last waypoint for interpolation.
+  const firstWaypoint = waypoints[0];
+  const lastWaypoint = waypoints[waypoints.length - 1];
+
+  if (!firstWaypoint || !lastWaypoint) {
+    return [];
+  }
+
+  // Generate profile points at regular intervals.
+  for (let i = 0; i < interpolatedElevations.length; i += 1) {
+    const distPoint = interpolatedElevations[i];
+    const smoothedElev = smoothedElevations[i];
+
+    if (distPoint === undefined || smoothedElev === undefined) {
       continue;
     }
 
-    const distance = haversineDistanceMeters(previousWaypoint, currentWaypoint);
-    cumulative += distance;
+    // Interpolate lat/lon at this distance.
+    let interpolatedLat = firstWaypoint.lat;
+    let interpolatedLon = firstWaypoint.lon;
+
+    for (let j = 0; j < waypoints.length - 1; j += 1) {
+      const wpStart = waypoints[j];
+      const wpEnd = waypoints[j + 1];
+      const distStart = distancesFromStart[j] ?? 0;
+      const distEnd = distancesFromStart[j + 1] ?? 0;
+
+      if (
+        wpStart
+        && wpEnd
+        && distPoint.distance >= distStart
+        && distPoint.distance <= distEnd
+      ) {
+        const t = distEnd > distStart ? (distPoint.distance - distStart) / (distEnd - distStart) : 0;
+        interpolatedLat = wpStart.lat + t * (wpEnd.lat - wpStart.lat);
+        interpolatedLon = wpStart.lon + t * (wpEnd.lon - wpStart.lon);
+        break;
+      }
+    }
 
     profile.push({
-      ...currentWaypoint,
-      rawElevation: interpolatedRawElevations[i] as number,
-      demElevation: rawElevation,
-      elevation: smoothedElevation,
-      distanceFromStart: cumulative,
-      elevationSource: interpolatedMask[i] ? "interpolated" : "dem",
+      lat: interpolatedLat,
+      lon: interpolatedLon,
+      rawElevation: distPoint.elevation,
+      demElevation: distPoint.elevation,
+      elevation: smoothedElev,
+      distanceFromStart: distPoint.distance,
+      elevationSource: "dem",
     });
   }
 
-  return { profile };
+  return profile;
+}
+
+/**
+ * Interpolate elevations at regular distance intervals.
+ *
+ * Returns an array of `{distance, elevation}` pairs at regular intervals.
+ */
+function interpolateElevationAtRegularIntervals(
+  elevations: number[],
+  distancesFromStart: number[],
+  interval: number,
+): Array<{ distance: number; elevation: number }> {
+  if (elevations.length === 0 || distancesFromStart.length === 0) {
+    return [];
+  }
+
+  const maxDistance = distancesFromStart[distancesFromStart.length - 1] ?? 0;
+  const result: Array<{ distance: number; elevation: number }> = [];
+
+  for (let dist = 0; dist <= maxDistance; dist += interval) {
+    // Find surrounding elevation points.
+    let elevBefore: number | undefined;
+    let elevAfter: number | undefined;
+    let distBefore = 0;
+    let distAfter = maxDistance;
+
+    for (let i = 0; i < distancesFromStart.length; i += 1) {
+      const d = distancesFromStart[i];
+      const e = elevations[i];
+
+      if (d !== undefined && e !== undefined) {
+        if (d <= dist && d > distBefore) {
+          distBefore = d;
+          elevBefore = e;
+        }
+        if (d >= dist && d < distAfter) {
+          distAfter = d;
+          elevAfter = e;
+        }
+      }
+    }
+
+    // Interpolate elevation.
+    let interpolatedElev: number;
+    if (elevBefore !== undefined && elevAfter !== undefined) {
+      const t = distAfter > distBefore ? (dist - distBefore) / (distAfter - distBefore) : 0;
+      interpolatedElev = elevBefore + t * (elevAfter - elevBefore);
+    } else if (elevBefore !== undefined) {
+      interpolatedElev = elevBefore;
+    } else if (elevAfter !== undefined) {
+      interpolatedElev = elevAfter;
+    } else {
+      continue; // Skip if no elevation data.
+    }
+
+    result.push({ distance: dist, elevation: interpolatedElev });
+  }
+
+  return result;
 }
 
 /**

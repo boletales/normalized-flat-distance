@@ -13,7 +13,7 @@
  * power P_0 (see assumed-speed.ts), and P_eq is the equilibrium power at
  * that speed.
  *
- * A section of distance d at gradient n contributes d · c(n) km to the
+ * A section of distance d at gradient n contributes d · c(n) m to the
  * total NFD of a course.
  */
 
