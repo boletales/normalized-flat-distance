@@ -18,6 +18,7 @@ const levelSelect = document.getElementById("levelSelect");
 const analyzeButton = document.getElementById("analyzeButton");
 const clearButton = document.getElementById("clearButton");
 const exportButton = document.getElementById("exportButton");
+const swapSgButton = document.getElementById("swapSgButton");
 const summary = document.getElementById("summary");
 const error = document.getElementById("error");
 const profileCanvas = document.getElementById("profileChart");
@@ -62,6 +63,47 @@ const FIXED_SG_INTERVAL_METERS = 25;
 const FIXED_SG_WINDOW_SIZE = 11;
 const FIXED_SG_POLYNOMIAL_ORDER = 3;
 const FIXED_MAX_ABS_GRADE = 30;
+const POLYLINE_DRAG_HIT_TOLERANCE_METERS = 20;
+const POLYLINE_DRAG_MOVE_THRESHOLD_METERS = 8;
+const DOM_DRAG_MOVE_THRESHOLD_PX = 6;
+const CLICK_SUPPRESS_WINDOW_MS = 350;
+const ENABLE_ROUTE_DEBUG_LOG = true;
+
+let suppressNextMapClick = false;
+let suppressMapClickUntilMs = 0;
+const polylineDragState = {
+  active: false,
+  startLatLng: null,
+  hasMoved: false,
+};
+
+const domDragState = {
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  moved: false,
+};
+
+function debugLog(eventName, payload = {}) {
+  if (!ENABLE_ROUTE_DEBUG_LOG) {
+    return;
+  }
+  console.log(`[route-ui] ${eventName}`, {
+    at: new Date().toISOString(),
+    ...payload,
+  });
+}
+
+function suppressMapClickTemporarily(reason, windowMs = CLICK_SUPPRESS_WINDOW_MS) {
+  suppressNextMapClick = true;
+  suppressMapClickUntilMs = Math.max(suppressMapClickUntilMs, performance.now() + windowMs);
+  debugLog("map.click:suppress-window", {
+    reason,
+    windowMs,
+    suppressMapClickUntilMs: Number(suppressMapClickUntilMs.toFixed(1)),
+  });
+}
 
 function showUiError(message) {
   error.textContent = message;
@@ -83,24 +125,134 @@ function getMarkerLabel(index, count) {
   return String(index);
 }
 
-function removeWaypointAt(index) {
-  const current = routingControl.getWaypoints()
+function getCurrentWaypoints() {
+  return routingControl.getWaypoints()
     .map((w) => w.latLng)
     .filter((v) => v !== null);
+}
 
-  if (current.length <= 2) {
-    showUiError("スタートとゴールは最低2点必要です。経由点のみ削除できます。");
-    return;
-  }
-
-  if (index <= 0 || index >= current.length - 1) {
-    showUiError("スタート/ゴールは削除できません。経由点を削除してください。");
-    return;
-  }
-
-  const next = current.filter((_, i) => i !== index);
-  routingControl.setWaypoints(next);
+function setWaypointsAndClearError(waypoints) {
+  debugLog("setWaypoints", {
+    count: waypoints.length,
+    points: waypoints.map((p, i) => ({
+      index: i,
+      lat: Number(p.lat.toFixed(6)),
+      lng: Number(p.lng.toFixed(6)),
+    })),
+  });
+  routingControl.setWaypoints(waypoints);
   clearUiError();
+}
+
+function projectPointToSegment(pointLatLng, aLatLng, bLatLng) {
+  const p = map.latLngToLayerPoint(pointLatLng);
+  const a = map.latLngToLayerPoint(aLatLng);
+  const b = map.latLngToLayerPoint(bLatLng);
+  const ab = b.subtract(a);
+  const ap = p.subtract(a);
+  const len2 = (ab.x * ab.x) + (ab.y * ab.y);
+
+  if (len2 === 0) {
+    return {
+      latLng: aLatLng,
+      t: 0,
+      distanceMeters: map.distance(pointLatLng, aLatLng),
+    };
+  }
+
+  const rawT = ((ap.x * ab.x) + (ap.y * ab.y)) / len2;
+  const t = Math.max(0, Math.min(1, rawT));
+  const projectionPoint = L.point(a.x + (ab.x * t), a.y + (ab.y * t));
+  const projectionLatLng = map.layerPointToLatLng(projectionPoint);
+
+  return {
+    latLng: projectionLatLng,
+    t,
+    distanceMeters: map.distance(pointLatLng, projectionLatLng),
+  };
+}
+
+function toRouteLatLngs(routeCoordinates) {
+  return routeCoordinates.map((c) => L.latLng(c.lat, c.lon));
+}
+
+function buildRouteCumulativeDistances(routeLatLngs) {
+  const cumulative = [0];
+  for (let i = 1; i < routeLatLngs.length; i += 1) {
+    cumulative.push(cumulative[i - 1] + map.distance(routeLatLngs[i - 1], routeLatLngs[i]));
+  }
+  return cumulative;
+}
+
+function projectOntoRoute(latLng, routeLatLngs, cumulativeDistances = null) {
+  if (!Array.isArray(routeLatLngs) || routeLatLngs.length < 2) {
+    return null;
+  }
+
+  const cumulative = cumulativeDistances ?? buildRouteCumulativeDistances(routeLatLngs);
+  let best = null;
+
+  for (let i = 0; i < routeLatLngs.length - 1; i += 1) {
+    const projected = projectPointToSegment(latLng, routeLatLngs[i], routeLatLngs[i + 1]);
+    const segmentLength = cumulative[i + 1] - cumulative[i];
+    const progress = cumulative[i] + (segmentLength * projected.t);
+    if (!best || projected.distanceMeters < best.distanceMeters) {
+      best = {
+        latLng: projected.latLng,
+        distanceMeters: projected.distanceMeters,
+        segmentIndex: i,
+        progress,
+      };
+    }
+  }
+
+  return best;
+}
+
+function computeInsertIndexByRouteProgress(routeProjection, waypoints, routeLatLngs, cumulativeDistances) {
+  if (waypoints.length <= 1) {
+    return waypoints.length;
+  }
+
+  for (let i = 1; i < waypoints.length; i += 1) {
+    const waypointProjection = projectOntoRoute(waypoints[i], routeLatLngs, cumulativeDistances);
+    if (waypointProjection && routeProjection.progress <= waypointProjection.progress) {
+      return i;
+    }
+  }
+
+  return waypoints.length - 1;
+}
+
+function removeWaypointAt(index) {
+  const current = getCurrentWaypoints();
+  if (index < 0 || index >= current.length) {
+    debugLog("removeWaypoint:invalidIndex", { index, count: current.length });
+    showUiError("削除対象の地点が見つかりませんでした。");
+    return;
+  }
+  debugLog("removeWaypoint", { index, beforeCount: current.length });
+  const next = current.filter((_, i) => i !== index);
+  setWaypointsAndClearError(next);
+}
+
+function swapStartGoal() {
+  const current = getCurrentWaypoints();
+  if (current.length < 2) {
+    debugLog("swapStartGoal:skipped", { reason: "insufficient-points", count: current.length });
+    showUiError("S/G入れ替えには2点以上必要です。");
+    return;
+  }
+
+  const swapped = [...current];
+  const lastIndex = swapped.length - 1;
+  [swapped[0], swapped[lastIndex]] = [swapped[lastIndex], swapped[0]];
+  debugLog("swapStartGoal", {
+    count: swapped.length,
+    start: { lat: Number(swapped[0].lat.toFixed(6)), lng: Number(swapped[0].lng.toFixed(6)) },
+    goal: { lat: Number(swapped[lastIndex].lat.toFixed(6)), lng: Number(swapped[lastIndex].lng.toFixed(6)) },
+  });
+  setWaypointsAndClearError(swapped);
 }
 
 const routingControl = L.Routing.control({
@@ -124,6 +276,7 @@ const routingControl = L.Routing.control({
   createMarker: (index, waypoint, count) => {
     const role = getMarkerRole(index, count);
     const label = getMarkerLabel(index, count);
+    const roleText = role === "start" ? "スタート" : (role === "goal" ? "ゴール" : `経由点 ${label}`);
 
     const marker = L.marker(waypoint.latLng, {
       title: `Waypoint ${index + 1}/${count}`,
@@ -136,30 +289,28 @@ const routingControl = L.Routing.control({
       }),
     });
 
-    if (role === "via") {
-      marker.bindTooltip("右クリック / ダブルクリックで削除", {
-        direction: "top",
-        offset: [0, -12],
-      });
+    marker.bindTooltip("右クリック / ダブルクリックで削除", {
+      direction: "top",
+      offset: [0, -12],
+    });
 
-      marker.on("contextmenu", () => {
+    marker.on("contextmenu", () => {
+      removeWaypointAt(index);
+    });
+
+    marker.on("dblclick", () => {
+      removeWaypointAt(index);
+    });
+
+    marker.bindPopup(`<button type=\"button\" data-delete-waypoint>${roleText}を削除</button>`);
+    marker.on("popupopen", (ev) => {
+      const root = ev.popup.getElement();
+      const button = root?.querySelector("button[data-delete-waypoint]");
+      button?.addEventListener("click", () => {
+        map.closePopup();
         removeWaypointAt(index);
-      });
-
-      marker.on("dblclick", () => {
-        removeWaypointAt(index);
-      });
-
-      marker.bindPopup("<button type=\"button\" data-delete-waypoint>この経由点を削除</button>");
-      marker.on("popupopen", (ev) => {
-        const root = ev.popup.getElement();
-        const button = root?.querySelector("button[data-delete-waypoint]");
-        button?.addEventListener("click", () => {
-          map.closePopup();
-          removeWaypointAt(index);
-        }, { once: true });
-      });
-    }
+      }, { once: true });
+    });
 
     return marker;
   },
@@ -168,26 +319,251 @@ const routingControl = L.Routing.control({
 routingControl.on("routesfound", (event) => {
   const route = event.routes?.[0];
   if (!route || !Array.isArray(route.coordinates)) {
+    debugLog("routesfound:empty", {
+      hasRoutes: Boolean(event.routes),
+      routeCount: event.routes?.length ?? 0,
+    });
     latestRouteCoordinates = [];
     return;
   }
 
   latestRouteCoordinates = route.coordinates.map((c) => ({ lat: c.lat, lon: c.lng }));
+  debugLog("routesfound", {
+    coordinateCount: latestRouteCoordinates.length,
+    waypointCount: getCurrentWaypoints().length,
+  });
 });
 
+const mapContainer = map.getContainer();
+mapContainer.addEventListener("pointerdown", (ev) => {
+  if (ev.button !== 0) {
+    return;
+  }
+
+  domDragState.active = true;
+  domDragState.pointerId = ev.pointerId;
+  domDragState.startX = ev.clientX;
+  domDragState.startY = ev.clientY;
+  domDragState.moved = false;
+  debugLog("dom.pointerdown", {
+    x: ev.clientX,
+    y: ev.clientY,
+    targetTag: ev.target?.tagName,
+    targetClass: ev.target?.className ?? "",
+  });
+}, true);
+
+mapContainer.addEventListener("pointermove", (ev) => {
+  if (!domDragState.active || domDragState.pointerId !== ev.pointerId) {
+    return;
+  }
+
+  const dx = ev.clientX - domDragState.startX;
+  const dy = ev.clientY - domDragState.startY;
+  const movedPx = Math.hypot(dx, dy);
+  if (movedPx >= DOM_DRAG_MOVE_THRESHOLD_PX && !domDragState.moved) {
+    domDragState.moved = true;
+    debugLog("dom.pointermove:drag", {
+      movedPx: Number(movedPx.toFixed(1)),
+    });
+  }
+}, true);
+
+mapContainer.addEventListener("pointerup", (ev) => {
+  if (!domDragState.active || domDragState.pointerId !== ev.pointerId) {
+    return;
+  }
+
+  const dx = ev.clientX - domDragState.startX;
+  const dy = ev.clientY - domDragState.startY;
+  const movedPx = Math.hypot(dx, dy);
+  debugLog("dom.pointerup", {
+    x: ev.clientX,
+    y: ev.clientY,
+    movedPx: Number(movedPx.toFixed(1)),
+    moved: domDragState.moved,
+    suppressNextMapClick,
+    targetTag: ev.target?.tagName,
+    targetClass: ev.target?.className ?? "",
+  });
+
+  if (domDragState.moved) {
+    suppressMapClickTemporarily("dom-pointer-drag");
+  }
+
+  domDragState.active = false;
+  domDragState.pointerId = null;
+  domDragState.moved = false;
+}, true);
+
+mapContainer.addEventListener("pointercancel", () => {
+  if (!domDragState.active) {
+    return;
+  }
+  debugLog("dom.pointercancel", {});
+  domDragState.active = false;
+  domDragState.pointerId = null;
+  domDragState.moved = false;
+}, true);
+
 map.on("click", (e) => {
-  const current = routingControl.getWaypoints()
-    .map((w) => w.latLng)
-    .filter((v) => v !== null);
+  const now = performance.now();
+  const inSuppressWindow = now < suppressMapClickUntilMs;
+  debugLog("map.click:start", {
+    suppressNextMapClick,
+    inSuppressWindow,
+    lat: Number(e.latlng.lat.toFixed(6)),
+    lng: Number(e.latlng.lng.toFixed(6)),
+  });
+  if (suppressNextMapClick || inSuppressWindow) {
+    debugLog("map.click:suppressed", {
+      reason: suppressNextMapClick ? "flag" : "window",
+      lat: Number(e.latlng.lat.toFixed(6)),
+      lng: Number(e.latlng.lng.toFixed(6)),
+    });
+    suppressNextMapClick = false;
+    return;
+  }
+
+  const current = getCurrentWaypoints();
+  debugLog("map.click:beforeUpdate", { waypointCount: current.length });
 
   if (current.length < 2) {
     current.push(e.latlng);
   } else {
-    // 使い勝手のため、地図クリックで「ゴールの手前」に経由点を挿入する
-    current.splice(current.length - 1, 0, e.latlng);
+    // 既存ゴールを最後の経由点として残し、クリック点を新しいゴールにする
+    current.push(e.latlng);
   }
-  routingControl.setWaypoints(current);
-  clearUiError();
+  debugLog("map.click:apply", {
+    nextCount: current.length,
+    mode: current.length <= 2 ? "set-initial" : "set-new-goal",
+  });
+  setWaypointsAndClearError(current);
+});
+
+map.on("mousedown", (e) => {
+  debugLog("map.mousedown", {
+    lat: Number(e.latlng.lat.toFixed(6)),
+    lng: Number(e.latlng.lng.toFixed(6)),
+    routeCoordinateCount: latestRouteCoordinates.length,
+  });
+  if (latestRouteCoordinates.length < 2) {
+    debugLog("map.mousedown:skip", { reason: "no-route" });
+    return;
+  }
+
+  const routeLatLngs = toRouteLatLngs(latestRouteCoordinates);
+  const hit = projectOntoRoute(e.latlng, routeLatLngs);
+  if (!hit || hit.distanceMeters > POLYLINE_DRAG_HIT_TOLERANCE_METERS) {
+    debugLog("map.mousedown:skip", {
+      reason: "outside-polyline-hit-area",
+      distanceMeters: hit ? Number(hit.distanceMeters.toFixed(2)) : null,
+    });
+    return;
+  }
+
+  polylineDragState.active = true;
+  polylineDragState.startLatLng = e.latlng;
+  polylineDragState.hasMoved = false;
+  debugLog("map.mousedown:drag-start", {
+    distanceMeters: Number(hit.distanceMeters.toFixed(2)),
+  });
+  map.dragging.disable();
+});
+
+map.on("mousemove", (e) => {
+  if (!polylineDragState.active || !polylineDragState.startLatLng) {
+    return;
+  }
+
+  const movedMeters = map.distance(polylineDragState.startLatLng, e.latlng);
+  if (movedMeters >= POLYLINE_DRAG_MOVE_THRESHOLD_METERS) {
+    polylineDragState.hasMoved = true;
+    debugLog("map.mousemove:dragging", {
+      movedMeters: Number(movedMeters.toFixed(2)),
+    });
+  }
+});
+
+map.on("mouseup", (e) => {
+  debugLog("map.mouseup:start", {
+    active: polylineDragState.active,
+    hasMoved: polylineDragState.hasMoved,
+    lat: Number(e.latlng.lat.toFixed(6)),
+    lng: Number(e.latlng.lng.toFixed(6)),
+  });
+  if (!polylineDragState.active) {
+    debugLog("map.mouseup:skip", { reason: "drag-not-active" });
+    return;
+  }
+
+  if (map.dragging && !map.dragging.enabled()) {
+    map.dragging.enable();
+  }
+
+  polylineDragState.active = false;
+  const shouldInsert = polylineDragState.hasMoved;
+  polylineDragState.startLatLng = null;
+  polylineDragState.hasMoved = false;
+
+  // ドラッグ操作後に Leaflet の click が連鎖してゴール更新されるのを防ぐ
+  if (shouldInsert) {
+    suppressMapClickTemporarily("polyline-drag-insert");
+    debugLog("map.mouseup:suppress-next-click", { shouldInsert });
+    if (e.originalEvent) {
+      L.DomEvent.stop(e.originalEvent);
+    }
+  }
+
+  if (!shouldInsert || latestRouteCoordinates.length < 2) {
+    debugLog("map.mouseup:skip-insert", {
+      shouldInsert,
+      routeCoordinateCount: latestRouteCoordinates.length,
+    });
+    return;
+  }
+
+  const currentWaypoints = getCurrentWaypoints();
+  if (currentWaypoints.length < 2) {
+    debugLog("map.mouseup:skip-insert", {
+      reason: "insufficient-waypoints",
+      waypointCount: currentWaypoints.length,
+    });
+    return;
+  }
+
+  const routeLatLngs = toRouteLatLngs(latestRouteCoordinates);
+  const cumulativeDistances = buildRouteCumulativeDistances(routeLatLngs);
+  const projection = projectOntoRoute(e.latlng, routeLatLngs, cumulativeDistances);
+  if (!projection || projection.distanceMeters > POLYLINE_DRAG_HIT_TOLERANCE_METERS) {
+    debugLog("map.mouseup:skip-insert", {
+      reason: "outside-polyline-hit-area",
+      distanceMeters: projection ? Number(projection.distanceMeters.toFixed(2)) : null,
+    });
+    return;
+  }
+
+  const insertIndex = computeInsertIndexByRouteProgress(
+    projection,
+    currentWaypoints,
+    routeLatLngs,
+    cumulativeDistances,
+  );
+
+  const next = [...currentWaypoints];
+  next.splice(insertIndex, 0, projection.latLng);
+  debugLog("map.mouseup:insert-via", {
+    insertIndex,
+    beforeCount: currentWaypoints.length,
+    afterCount: next.length,
+    projectionDistanceMeters: Number(projection.distanceMeters.toFixed(2)),
+    projectionProgress: Number(projection.progress.toFixed(2)),
+  });
+  setWaypointsAndClearError(next);
+});
+
+swapSgButton?.addEventListener("click", () => {
+  swapStartGoal();
 });
 
 clearButton.addEventListener("click", () => {

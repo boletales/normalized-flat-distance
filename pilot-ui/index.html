@@ -25,6 +25,7 @@
         <div class="buttons">
           <button id="analyzeButton">解析</button>
           <button id="clearButton" class="secondary">ルートクリア</button>
+          <button id="swapSgButton" class="secondary">S/G入れ替え</button>
           <button id="exportButton" class="secondary">標高データCSV出力</button>
         </div>
 
@@ -38,8 +39,10 @@
           <ol>
             <li>ページ初期状態では点はありません。1回目クリックでS、2回目クリックでGを配置</li>
             <li>地図上の点は S=スタート、G=ゴール、数字=経由点</li>
-            <li>地図クリックで「ゴール手前」に経由点を追加</li>
-            <li>経由点は右クリック/ダブルクリック/ポップアップボタンで削除</li>
+            <li>3回目以降の地図クリックで、直前のGは最後の経由点になり、クリック地点が新しいGになります</li>
+            <li>すべての点(S/G/経由点)は右クリック/ダブルクリック/ポップアップボタンで削除できます</li>
+            <li>S/G入れ替えボタンでスタートとゴールを反転できます</li>
+            <li>ルート線(polyline)付近をドラッグして離すと、その位置に経由点を追加できます</li>
             <li>解析ボタンで標高・勾配グラフとNFDを確認</li>
             <li>CSV出力ボタンで標高デバッグデータを保存</li>
             <li>グラフにマウスオーバーすると地図上に対応地点を表示</li>
