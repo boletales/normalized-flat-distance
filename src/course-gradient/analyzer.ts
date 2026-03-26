@@ -1,5 +1,10 @@
-import type { CourseSection, NfdLut } from "../types";
-import { computeNfd, computeNfdKm } from "../nfd/calculator";
+import type { NfdLut } from "../types";
+import { interpolateCoefficient } from "../nfd/calculator";
+import {
+  interpolateElevation,
+  savitzkyGolaySmooth,
+  type ElevationPoint,
+} from "../optimization/smoothing";
 
 /** Geographic coordinate in WGS84. */
 export interface GeoPoint {
@@ -36,20 +41,22 @@ export interface RouteProfilePoint extends GeoPoint {
 /** Options for route grade analysis. */
 export interface CourseGradientBuildOptions {
   /**
-   * Distance-based smoothing half-window in meters.
-   * If set (> 0), this takes precedence over `smoothingWindow`.
+   * If true, use Savitzky-Golay smoothing with interpolation.
+   * This provides better gradient smoothing via polynomial fitting.
    */
-  smoothingDistanceMeters?: number;
-  /** Moving-average window size for elevation smoothing. 1 disables smoothing. */
-  smoothingWindow?: number;
+  useSavitzkyGolay?: boolean;
   /**
-   * Section length for grade computation (m).
-   * Sections are created at fixed distance intervals independent of source
-   * waypoint/OSM boundaries.
+    * Interpolation interval for Savitzky-Golay smoothing in meters (default: 20).
    */
-  sectionLengthMeters?: number;
-  /** Segments shorter than this are merged for grade estimation (m). */
-  minimumDistance?: number;
+  savitzkyGolayInterval?: number;
+  /**
+   * Savitzky-Golay window size (odd number, e.g. 5, 7, 9, 11).
+   */
+  savitzkyGolayWindowSize?: number;
+  /**
+   * Savitzky-Golay polynomial order (2 or 3).
+   */
+  savitzkyGolayPolynomialOrder?: 2 | 3;
   /** Clamp absolute grade (%) to suppress extreme spikes from noisy data. */
   maxAbsGrade?: number;
 }
@@ -57,7 +64,6 @@ export interface CourseGradientBuildOptions {
 /** Result of route analysis. */
 export interface CourseGradientResult {
   profile: RouteProfilePoint[];
-  sections: CourseSection[];
 }
 
 /** Combined result for grade analysis + NFD conversion. */
@@ -86,166 +92,107 @@ export function haversineDistanceMeters(a: GeoPoint, b: GeoPoint): number {
 }
 
 /**
- * Apply centered moving average to elevation samples.
- */
-export function smoothElevations(
-  elevations: number[],
-  windowSize = 5,
-): number[] {
-  if (windowSize <= 1 || elevations.length <= 2) {
-    return [...elevations];
-  }
-
-  const normalizedWindow = windowSize % 2 === 0 ? windowSize + 1 : windowSize;
-  const radius = Math.floor(normalizedWindow / 2);
-
-  return elevations.map((_, index) => {
-    const start = Math.max(0, index - radius);
-    const end = Math.min(elevations.length - 1, index + radius);
-
-    let sum = 0;
-    let count = 0;
-    for (let i = start; i <= end; i += 1) {
-      sum += elevations[i] as number;
-      count += 1;
-    }
-
-    return sum / count;
-  });
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) {
-    return 0;
-  }
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 0) {
-    const left = sorted[mid - 1] as number;
-    const right = sorted[mid] as number;
-    return (left + right) / 2;
-  }
-  return sorted[mid] as number;
-}
-
-/**
- * Smooth elevations in distance-elevation domain.
+ * Smooth elevations using Savitzky-Golay filter with linear interpolation.
  *
- * The smoothing window is converted to a metric radius using median point
- * spacing, then centered averaging is applied with distance-based neighbors.
+ * This method:
+ * 1. Interpolates elevations at regular intervals using linear interpolation
+ * 2. Applies Savitzky-Golay smoothing (polynomial fitting) to the interpolated data
+ * 3. Re-samples the smoothed elevations back to the original waypoint distances
+ *
+ * @param elevations - Array of elevation values at waypoints (m)
+ * @param distancesFromStart - Cumulative distances from route start (m)
+ * @param interpolationInterval - Interpolation interval in meters (default: 20m)
+ * @returns Smoothed elevation array
  */
-export function smoothElevationsByDistance(
+export function smoothElevationsWithSavitzkyGolay(
   elevations: number[],
   distancesFromStart: number[],
-  windowSize = 5,
+  interpolationInterval: number = 20,
+  windowSize: number = 11,
+  polynomialOrder: 2 | 3 = 3,
 ): number[] {
   if (
-    windowSize <= 1
-    || elevations.length <= 2
+    elevations.length <= 2
     || elevations.length !== distancesFromStart.length
   ) {
     return [...elevations];
   }
 
-  const positiveSteps: number[] = [];
-  for (let i = 1; i < distancesFromStart.length; i += 1) {
-    const prev = distancesFromStart[i - 1];
-    const curr = distancesFromStart[i];
-    if (prev === undefined || curr === undefined) {
-      continue;
-    }
-    const step = curr - prev;
-    if (step > 0) {
-      positiveSteps.push(step);
-    }
-  }
+  // Create elevation points from the data
+  const elevationPoints: ElevationPoint[] = elevations.map((elev, idx) => ({
+    distance: distancesFromStart[idx] as number,
+    elevation: elev as number,
+  }));
 
-  const medianStep = median(positiveSteps);
-  if (!Number.isFinite(medianStep) || medianStep <= 0) {
-    return smoothElevations(elevations, windowSize);
-  }
+  // Interpolate at regular intervals
+  const interpolated = interpolateElevation(elevationPoints, interpolationInterval);
 
-  const normalizedWindow = windowSize % 2 === 0 ? windowSize + 1 : windowSize;
-  const halfWindowMeters = (normalizedWindow * medianStep) / 2;
-
-  return elevations.map((_, index) => {
-    const centerDistance = distancesFromStart[index];
-    if (typeof centerDistance !== "number" || !Number.isFinite(centerDistance)) {
-      return elevations[index] as number;
-    }
-
-    let sum = 0;
-    let count = 0;
-    for (let j = 0; j < elevations.length; j += 1) {
-      const d = distancesFromStart[j];
-      const e = elevations[j];
-      if (
-        typeof d !== "number"
-        || typeof e !== "number"
-        || !Number.isFinite(d)
-        || !Number.isFinite(e)
-      ) {
-        continue;
-      }
-      if (Math.abs(d - centerDistance) <= halfWindowMeters) {
-        sum += e;
-        count += 1;
-      }
-    }
-
-    if (count === 0) {
-      return elevations[index] as number;
-    }
-    return sum / count;
-  });
-}
-
-/**
- * Smooth elevations in distance-elevation domain with explicit metric radius.
- */
-export function smoothElevationsByDistanceMeters(
-  elevations: number[],
-  distancesFromStart: number[],
-  halfWindowMeters = 30,
-): number[] {
-  if (
-    halfWindowMeters <= 0
-    || elevations.length <= 2
-    || elevations.length !== distancesFromStart.length
-  ) {
+  if (interpolated.length < 2) {
     return [...elevations];
   }
 
-  return elevations.map((_, index) => {
-    const centerDistance = distancesFromStart[index];
-    if (typeof centerDistance !== "number" || !Number.isFinite(centerDistance)) {
-      return elevations[index] as number;
-    }
+  const firstInterpolated = interpolated[0];
+  const lastInterpolated = interpolated[interpolated.length - 1];
+  if (!firstInterpolated || !lastInterpolated) {
+    return [...elevations];
+  }
 
-    let sum = 0;
-    let count = 0;
-    for (let j = 0; j < elevations.length; j += 1) {
-      const d = distancesFromStart[j];
-      const e = elevations[j];
+  // Add one guard point on both sides to stabilize edge behavior.
+  // Example (interval=20): -20 and 1620 for a [0..1600] regularized range.
+  const paddedInterpolated: ElevationPoint[] = [
+    {
+      distance: firstInterpolated.distance - interpolationInterval,
+      elevation: firstInterpolated.elevation,
+    },
+    ...interpolated,
+    {
+      distance: lastInterpolated.distance + interpolationInterval,
+      elevation: lastInterpolated.elevation,
+    },
+  ];
+
+  // Apply Savitzky-Golay smoothing
+  const paddedInterpolatedElevs = paddedInterpolated.map((p) => p.elevation);
+  const paddedSmoothed = savitzkyGolaySmooth(
+    paddedInterpolatedElevs,
+    windowSize,
+    polynomialOrder,
+  );
+
+  // Remove guard points from the smoothed series so it aligns with `interpolated`.
+  const smoothed = paddedSmoothed.slice(1, paddedSmoothed.length - 1);
+
+  // Re-sample back to original waypoint distances
+  const result: number[] = [];
+  for (let i = 0; i < elevations.length; i += 1) {
+    const targetDist = distancesFromStart[i] as number;
+
+    // Find the two interpolated points surrounding this distance
+    let foundValue: number | null = null;
+
+    for (let j = 0; j < paddedInterpolated.length - 1; j += 1) {
+      const p0 = paddedInterpolated[j];
+      const p1 = paddedInterpolated[j + 1];
+
       if (
-        typeof d !== "number"
-        || typeof e !== "number"
-        || !Number.isFinite(d)
-        || !Number.isFinite(e)
+        p0 && p1
+        && targetDist >= p0.distance
+        && targetDist <= p1.distance
       ) {
-        continue;
-      }
-      if (Math.abs(d - centerDistance) <= halfWindowMeters) {
-        sum += e;
-        count += 1;
+        // Linear interpolation between smoothed points
+        const t = (targetDist - p0.distance) / (p1.distance - p0.distance);
+        const s0 = paddedSmoothed[j] as number;
+        const s1 = paddedSmoothed[j + 1] as number;
+        foundValue = s0 + t * (s1 - s0);
+        break;
       }
     }
 
-    if (count === 0) {
-      return elevations[index] as number;
-    }
-    return sum / count;
-  });
+    // Fallback: use nearest original elevation if interpolation fails
+    result.push(foundValue ?? (elevations[i] as number));
+  }
+
+  return result;
 }
 
 /**
@@ -307,27 +254,12 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function elevationAtDistance(profile: RouteProfilePoint[], distance: number): number {
-  if (profile.length === 0) {
-    return 0;
-  }
-
-  const first = profile[0];
-  if (!first) {
-    return 0;
-  }
-  if (distance <= 0) {
-    return first.elevation;
-  }
-
-  const last = profile[profile.length - 1];
-  if (!last) {
-    return first.elevation;
-  }
-  if (distance >= last.distanceFromStart) {
-    return last.elevation;
-  }
-
+function computeNfdFromProfile(
+  profile: RouteProfilePoint[],
+  lut: NfdLut,
+  maxAbsGrade: number,
+): number {
+  let total = 0;
   for (let i = 1; i < profile.length; i += 1) {
     const prev = profile[i - 1];
     const curr = profile[i];
@@ -335,37 +267,31 @@ function elevationAtDistance(profile: RouteProfilePoint[], distance: number): nu
       continue;
     }
 
-    if (distance <= curr.distanceFromStart) {
-      const span = curr.distanceFromStart - prev.distanceFromStart;
-      if (span <= 0) {
-        return curr.elevation;
-      }
-      const t = (distance - prev.distanceFromStart) / span;
-      return prev.elevation + t * (curr.elevation - prev.elevation);
+    const distance = curr.distanceFromStart - prev.distanceFromStart;
+    if (distance <= 0) {
+      continue;
     }
+
+    const rawGrade = ((curr.elevation - prev.elevation) / distance) * 100;
+    const grade = clamp(rawGrade, -maxAbsGrade, maxAbsGrade);
+    const coeff = interpolateCoefficient(grade, lut);
+    total += distance * coeff;
   }
 
-  return last.elevation;
+  return total;
 }
 
 /**
- * Convert waypoints to a smoothed grade profile and NFD-ready sections.
+ * Convert waypoints to a smoothed grade profile.
  */
-export async function buildCourseSectionsFromWaypoints(
+export async function buildCourseProfileFromWaypoints(
   waypoints: GeoPoint[],
   elevationProvider: ElevationProvider,
   options: CourseGradientBuildOptions = {},
 ): Promise<CourseGradientResult> {
   if (waypoints.length === 0) {
-    return { profile: [], sections: [] };
+    return { profile: [] };
   }
-
-  const smoothingWindow = options.smoothingWindow ?? 5;
-  const smoothingDistanceMeters = options.smoothingDistanceMeters;
-  const sectionLengthMeters = options.sectionLengthMeters
-    ?? options.minimumDistance
-    ?? 100;
-  const maxAbsGrade = options.maxAbsGrade ?? 30;
 
   const distancesFromStart = new Array<number>(waypoints.length).fill(0);
   let cumulativeDistance = 0;
@@ -389,25 +315,19 @@ export async function buildCourseSectionsFromWaypoints(
     interpolatedMask,
   } = interpolateMaskedElevations(rawElevations, interpolationMask);
 
-  const smoothedElevations = (
-    typeof smoothingDistanceMeters === "number"
-    && Number.isFinite(smoothingDistanceMeters)
-    && smoothingDistanceMeters > 0
-  )
-    ? smoothElevationsByDistanceMeters(
-      interpolatedRawElevations,
-      distancesFromStart,
-      smoothingDistanceMeters,
-    )
-    : smoothElevationsByDistance(
-      interpolatedRawElevations,
-      distancesFromStart,
-      smoothingWindow,
-    );
-
   const {
-    elevations: adjustedElevations,
-  } = interpolateMaskedElevations(smoothedElevations, interpolationMask);
+    savitzkyGolayInterval = 20,
+    savitzkyGolayWindowSize = 11,
+    savitzkyGolayPolynomialOrder = 3,
+  } = options;
+
+  const smoothedElevations = smoothElevationsWithSavitzkyGolay(
+    interpolatedRawElevations,
+    distancesFromStart,
+    savitzkyGolayInterval,
+    savitzkyGolayWindowSize,
+    savitzkyGolayPolynomialOrder,
+  );
 
   const profile: RouteProfilePoint[] = [];
   let cumulative = 0;
@@ -420,14 +340,14 @@ export async function buildCourseSectionsFromWaypoints(
     || firstRawElevation === undefined
     || firstSmoothedElevation === undefined
   ) {
-    return { profile: [], sections: [] };
+    return { profile: [] };
   }
 
   profile.push({
     ...firstWaypoint,
     rawElevation: interpolatedRawElevations[0] as number,
     demElevation: firstRawElevation,
-    elevation: adjustedElevations[0] as number,
+    elevation: firstSmoothedElevation,
     distanceFromStart: 0,
     elevationSource: interpolatedMask[0] ? "interpolated" : "dem",
   });
@@ -437,13 +357,11 @@ export async function buildCourseSectionsFromWaypoints(
     const currentWaypoint = waypoints[i];
     const rawElevation = rawElevations[i];
     const smoothedElevation = smoothedElevations[i];
-    const adjustedElevation = adjustedElevations[i];
     if (
       previousWaypoint === undefined
       || currentWaypoint === undefined
       || rawElevation === undefined
       || smoothedElevation === undefined
-      || adjustedElevation === undefined
     ) {
       continue;
     }
@@ -455,40 +373,17 @@ export async function buildCourseSectionsFromWaypoints(
       ...currentWaypoint,
       rawElevation: interpolatedRawElevations[i] as number,
       demElevation: rawElevation,
-      elevation: adjustedElevation,
+      elevation: smoothedElevation,
       distanceFromStart: cumulative,
       elevationSource: interpolatedMask[i] ? "interpolated" : "dem",
     });
   }
 
-  const sections: CourseSection[] = [];
-  const totalDistance = profile[profile.length - 1]?.distanceFromStart ?? 0;
-  const normalizedSectionLength = Number.isFinite(sectionLengthMeters) && sectionLengthMeters > 0
-    ? sectionLengthMeters
-    : 100;
-
-  let sectionStart = 0;
-  while (sectionStart < totalDistance) {
-    const sectionEnd = Math.min(totalDistance, sectionStart + normalizedSectionLength);
-    const distance = sectionEnd - sectionStart;
-    if (distance <= 0) {
-      break;
-    }
-
-    const startElevation = elevationAtDistance(profile, sectionStart);
-    const endElevation = elevationAtDistance(profile, sectionEnd);
-    const rawGrade = ((endElevation - startElevation) / distance) * 100;
-    const grade = clamp(rawGrade, -maxAbsGrade, maxAbsGrade);
-
-    sections.push({ distance, grade });
-    sectionStart = sectionEnd;
-  }
-
-  return { profile, sections };
+  return { profile };
 }
 
 /**
- * Convenience helper: waypoint route -> grade sections -> NFD.
+ * Convenience helper: waypoint route -> profile -> NFD.
  */
 export async function computeNfdFromWaypoints(
   waypoints: GeoPoint[],
@@ -496,19 +391,19 @@ export async function computeNfdFromWaypoints(
   lut: NfdLut,
   options: CourseGradientBuildOptions = {},
 ): Promise<NfdFromWaypointsResult> {
-  const { profile, sections } = await buildCourseSectionsFromWaypoints(
+  const { profile } = await buildCourseProfileFromWaypoints(
     waypoints,
     elevationProvider,
     options,
   );
 
-  const nfdMeters = computeNfd(sections, lut);
+  const maxAbsGrade = options.maxAbsGrade ?? 30;
+  const nfdMeters = computeNfdFromProfile(profile, lut, maxAbsGrade);
 
   return {
     profile,
-    sections,
     nfdMeters,
-    nfdKm: computeNfdKm(sections, lut),
+    nfdKm: nfdMeters / 1000,
   };
 }
 
