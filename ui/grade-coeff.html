@@ -14,6 +14,16 @@
 
         <div class="simple-grid">
           <label>
+            自転車の種類
+            <select id="bikeTypeSelect">
+              <option value="road" selected>road</option>
+              <option value="gravel">gravel</option>
+              <option value="mtb">mtb</option>
+              <option value="city">city</option>
+            </select>
+          </label>
+
+          <label>
             Crr
             <input id="crrInput" type="number" step="0.0001" min="0" value="0.004" />
           </label>
@@ -24,8 +34,23 @@
           </label>
 
           <label>
+            全重量 [kg]
+            <input id="massInput" type="number" step="0.1" min="0" value="68" />
+          </label>
+
+          <label>
             P_0 [W]
             <input id="p0Input" type="number" step="1" min="1" value="150" />
+          </label>
+
+          <label>
+            最低速度 [km/h]
+            <input id="minSpeedInput" type="number" step="0.1" min="0" value="4" />
+          </label>
+
+          <label>
+            駆動効率 η
+            <input id="etaInput" type="number" step="0.001" min="0.1" max="1" value="0.97" />
           </label>
 
           <label>

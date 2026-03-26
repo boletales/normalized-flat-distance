@@ -56,3 +56,39 @@ export const CYCLIST_PRESETS: Record<CyclistLevel, CyclistParams> = {
     flatPower: 250,
   },
 };
+
+/** Bike-type parameter presets used by UI. */
+export const BIKE_TYPE_PRESETS = {
+  road: {
+    CdA: 0.32,
+    Crr: 0.004,
+    mass: 68,
+    eta: 0.97,
+  },
+  gravel: {
+    CdA: 0.36,
+    Crr: 0.006,
+    mass: 71,
+    eta: 0.965,
+  },
+  mtb: {
+    CdA: 0.40,
+    Crr: 0.008,
+    mass: 73,
+    eta: 0.96,
+  },
+  city: {
+    CdA: 0.45,
+    Crr: 0.007,
+    mass: 75,
+    eta: 0.955,
+  },
+  custom: {
+    CdA: 0.35,
+    Crr: 0.005,
+    mass: 70,
+    eta: 0.97,
+  }
+} as const;
+
+export type BikeType = keyof typeof BIKE_TYPE_PRESETS;

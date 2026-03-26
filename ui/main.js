@@ -6,15 +6,23 @@ import "leaflet-routing-machine";
 import Chart from "chart.js/auto";
 
 import {
+  BIKE_TYPE_PRESETS,
   CYCLIST_PRESETS,
   buildNfdLut,
+  computeNfd,
   computeNfdFromWaypoints,
   GsiDemTileElevationProvider,
 } from "../src/index";
 
 /** @typedef {{lat:number, lon:number}} GeoPoint */
 
-const levelSelect = document.getElementById("levelSelect");
+const bikeTypeSelect = document.getElementById("bikeTypeSelect");
+const cdaInput = document.getElementById("cdaInput");
+const crrInput = document.getElementById("crrInput");
+const massInput = document.getElementById("massInput");
+const p0Input = document.getElementById("p0Input");
+const minSpeedInput = document.getElementById("minSpeedInput");
+const etaInput = document.getElementById("etaInput");
 const analyzeButton = document.getElementById("analyzeButton");
 const clearButton = document.getElementById("clearButton");
 const exportButton = document.getElementById("exportButton");
@@ -69,6 +77,7 @@ const DOM_DRAG_MOVE_THRESHOLD_PX = 6;
 const CLICK_SUPPRESS_WINDOW_MS = 220;
 const CLICK_SUPPRESS_RADIUS_PX = 18;
 const ENABLE_ROUTE_DEBUG_LOG = true;
+const DEFAULT_CYCLIST_PARAMS = CYCLIST_PRESETS.intermediate;
 
 let suppressNextMapClick = false;
 let suppressMapClickUntilMs = 0;
@@ -801,13 +810,120 @@ const chart = new Chart(profileCanvas, {
   },
 });
 
-function getOrBuildLut(level) {
-  const existing = lutCache.get(level);
+function buildLutCacheKey(params) {
+  return [
+    params.mass,
+    params.Crr,
+    params.CdA,
+    params.rho,
+    params.eta,
+    params.flatPower,
+    params.vMin,
+  ].map((v) => Number(v).toFixed(6)).join("|");
+}
+
+function setDetailInputsFromBikeType(bikeType) {
+  const bikePreset = BIKE_TYPE_PRESETS[bikeType] ?? BIKE_TYPE_PRESETS.road;
+  cdaInput.value = String(bikePreset.CdA);
+  crrInput.value = String(bikePreset.Crr);
+  massInput.value = String(bikePreset.mass);
+  etaInput.value = String(bikePreset.eta);
+}
+
+function buildCyclistParamsFromUi() {
+  const cda = Number(cdaInput.value);
+  const crr = Number(crrInput.value);
+  const mass = Number(massInput.value);
+  const flatPower = Number(p0Input.value);
+  const minSpeedKmh = Number(minSpeedInput.value);
+  const eta = Number(etaInput.value);
+
+  if (
+    !Number.isFinite(cda)
+    || !Number.isFinite(crr)
+    || !Number.isFinite(mass)
+    || !Number.isFinite(flatPower)
+    || !Number.isFinite(minSpeedKmh)
+    || !Number.isFinite(eta)
+  ) {
+    throw new Error("詳細オプションの数値入力が不正です。");
+  }
+
+  if (cda <= 0 || crr <= 0 || mass <= 0 || flatPower <= 0 || minSpeedKmh <= 0) {
+    throw new Error("CdA, Crr, 重量, P_0, 最低速度には正の値を指定してください。");
+  }
+  if (eta <= 0 || eta > 1) {
+    throw new Error("駆動効率 η は 0 より大きく 1 以下で指定してください。");
+  }
+
+  return {
+    ...DEFAULT_CYCLIST_PARAMS,
+    CdA: cda,
+    Crr: crr,
+    mass,
+    flatPower,
+    vMin: minSpeedKmh / 3.6,
+    eta,
+  };
+}
+
+function getOrBuildLut(params) {
+  const key = buildLutCacheKey(params);
+  const existing = lutCache.get(key);
   if (existing) return existing;
-  const lut = buildNfdLut(CYCLIST_PRESETS[level]);
-  lutCache.set(level, lut);
+  const lut = buildNfdLut(params);
+  lutCache.set(key, lut);
   return lut;
 }
+
+function buildSectionsFromProfile(profile, maxAbsGrade = FIXED_MAX_ABS_GRADE) {
+  const sections = [];
+  for (let i = 1; i < profile.length; i += 1) {
+    const prev = profile[i - 1];
+    const curr = profile[i];
+    if (!prev || !curr) {
+      continue;
+    }
+
+    const distance = curr.distanceFromStart - prev.distanceFromStart;
+    if (distance <= 0) {
+      continue;
+    }
+
+    const rawGrade = ((curr.elevation - prev.elevation) / distance) * 100;
+    const grade = Math.max(-maxAbsGrade, Math.min(maxAbsGrade, rawGrade));
+    sections.push({ distance, grade });
+  }
+  return sections;
+}
+
+function buildNfdSummaryLines(profile, cyclistParams, defaultNfdKm) {
+  const sections = buildSectionsFromProfile(profile, FIXED_MAX_ABS_GRADE);
+  const baseP0 = cyclistParams.flatPower;
+  const standardPowers = [100, 150, 200];
+  const tolerance = 1e-9;
+
+  const isStandardPower = standardPowers.some((p0) => Math.abs(baseP0 - p0) < tolerance);
+  const powersToShow = isStandardPower ? standardPowers : [...standardPowers, baseP0];
+
+  return powersToShow.map((p0) => {
+    const isCustom = !standardPowers.includes(p0);
+    const nfdKm = isCustom
+      ? (sections.length > 0
+        ? computeNfd(sections, getOrBuildLut({ ...cyclistParams, flatPower: p0 })) / 1000
+        : defaultNfdKm)
+      : (sections.length > 0
+        ? computeNfd(sections, getOrBuildLut({ ...cyclistParams, flatPower: p0 })) / 1000
+        : defaultNfdKm);
+    const label = isCustom ? `NFD (P_0=${p0.toFixed(1)}W, custom)` : `NFD (P_0=${p0}W)`;
+    return `${label}: ${nfdKm.toFixed(2)} km`;
+  });
+}
+
+setDetailInputsFromBikeType(bikeTypeSelect.value);
+bikeTypeSelect.addEventListener("change", () => {
+  setDetailInputsFromBikeType(bikeTypeSelect.value);
+});
 
 /**
  * Route coordinate count can be large; downsample to keep analysis responsive.
@@ -1039,10 +1155,9 @@ analyzeButton.addEventListener("click", async () => {
     analyzeButton.disabled = true;
     analyzeButton.textContent = "解析中...";
 
-    const level = levelSelect.value;
-
+    const cyclistParams = buildCyclistParamsFromUi();
     const sampledCoordinates = downsample(latestRouteCoordinates, 2500);
-    const lut = getOrBuildLut(level);
+    const lut = getOrBuildLut(cyclistParams);
 
     let interpolationMarkedCount = 0;
     let coordinatesForAnalysis = sampledCoordinates;
@@ -1086,10 +1201,12 @@ analyzeButton.addEventListener("click", async () => {
 
     const actualDistanceMeters = result.profile[result.profile.length - 1]?.distanceFromStart ?? 0;
 
+    const nfdLines = buildNfdSummaryLines(result.profile, cyclistParams, result.nfdKm);
+
     summary.innerHTML = [
       `入力点数: ${sampledCoordinates.length.toLocaleString()} 点`,
       `実距離: ${(actualDistanceMeters / 1000).toFixed(2)} km`,
-      `NFD: ${result.nfdKm.toFixed(2)} km`,
+      ...nfdLines,
       `NFD/実距離: ${(actualDistanceMeters > 0 ? result.nfdMeters / actualDistanceMeters : 0).toFixed(3)}`,
       `内挿点(トンネル/橋推定): ${interpolationMarkedCount.toLocaleString()} 点`,
       `タイルキャッシュ: ${tileProvider.size.toLocaleString()} 枚`,
