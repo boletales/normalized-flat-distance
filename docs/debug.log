@@ -1,0 +1,76 @@
+[route-ui] map.mousedown 
+Object { at: "2026-03-26T02:45:44.422Z", lat: 35.665838, lng: 139.666657, routeCoordinateCount: 0 }
+main.js:81:11
+[route-ui] map.mousedown:skip 
+Object { at: "2026-03-26T02:45:44.424Z", reason: "no-route" }
+main.js:81:11
+[route-ui] map.mouseup:start 
+Object { at: "2026-03-26T02:45:44.474Z", active: false, hasMoved: false, lat: 35.665838, lng: 139.666657 }
+main.js:81:11
+[route-ui] map.mouseup:skip 
+Object { at: "2026-03-26T02:45:44.474Z", reason: "drag-not-active" }
+main.js:81:11
+MouseEvent.mozPressure は推奨されません。代わりに PointerEvent.pressure を使用してください。 Util.js:15:4
+MouseEvent.mozInputSource は推奨されません。代わりに PointerEvent.pointerType を使用してください。 Util.js:15:4
+[route-ui] map.click:start 
+Object { at: "2026-03-26T02:45:44.475Z", suppressNextMapClick: false, lat: 35.665838, lng: 139.666657 }
+main.js:81:11
+[route-ui] map.click:beforeUpdate 
+Object { at: "2026-03-26T02:45:44.475Z", waypointCount: 0 }
+main.js:81:11
+[route-ui] map.click:apply 
+Object { at: "2026-03-26T02:45:44.475Z", nextCount: 1, mode: "set-initial" }
+main.js:81:11
+[route-ui] setWaypoints 
+Object { at: "2026-03-26T02:45:44.475Z", count: 1, points: (1) […] }
+main.js:81:11
+[route-ui] map.mousedown 
+Object { at: "2026-03-26T02:45:53.131Z", lat: 35.665698, lng: 139.669898, routeCoordinateCount: 0 }
+main.js:81:11
+[route-ui] map.mousedown:skip 
+Object { at: "2026-03-26T02:45:53.131Z", reason: "no-route" }
+main.js:81:11
+[route-ui] map.mouseup:start 
+Object { at: "2026-03-26T02:45:53.221Z", active: false, hasMoved: false, lat: 35.665698, lng: 139.669898 }
+main.js:81:11
+[route-ui] map.mouseup:skip 
+Object { at: "2026-03-26T02:45:53.221Z", reason: "drag-not-active" }
+main.js:81:11
+[route-ui] map.click:start 
+Object { at: "2026-03-26T02:45:53.222Z", suppressNextMapClick: false, lat: 35.665698, lng: 139.669898 }
+main.js:81:11
+[route-ui] map.click:beforeUpdate 
+Object { at: "2026-03-26T02:45:53.223Z", waypointCount: 1 }
+main.js:81:11
+[route-ui] map.click:apply 
+Object { at: "2026-03-26T02:45:53.223Z", nextCount: 2, mode: "set-initial" }
+main.js:81:11
+[route-ui] setWaypoints 
+Object { at: "2026-03-26T02:45:53.223Z", count: 2, points: (2) […] }
+main.js:81:11
+[route-ui] routesfound 
+Object { at: "2026-03-26T02:45:53.485Z", coordinateCount: 14, waypointCount: 2 }
+main.js:81:11
+[route-ui] routesfound 
+Object { at: "2026-03-26T02:46:01.944Z", coordinateCount: 17, waypointCount: 3 }
+main.js:81:11
+[route-ui] map.mouseup:start 
+Object { at: "2026-03-26T02:46:03.908Z", active: false, hasMoved: false, lat: 35.666031, lng: 139.668961 }
+main.js:81:11
+[route-ui] map.mouseup:skip 
+Object { at: "2026-03-26T02:46:03.908Z", reason: "drag-not-active" }
+main.js:81:11
+[route-ui] map.click:start 
+Object { at: "2026-03-26T02:46:03.911Z", suppressNextMapClick: false, lat: 35.666031, lng: 139.668961 }
+main.js:81:11
+[route-ui] map.click:beforeUpdate 
+Object { at: "2026-03-26T02:46:03.911Z", waypointCount: 3 }
+main.js:81:11
+[route-ui] map.click:apply 
+Object { at: "2026-03-26T02:46:03.911Z", nextCount: 4, mode: "set-new-goal" }
+main.js:81:11
+[route-ui] setWaypoints 
+Object { at: "2026-03-26T02:46:03.911Z", count: 4, points: (4) […] }
+main.js:81:11
+[route-ui] routesfound 
+Object { at: "2026-03-26T02:46:05.949Z", coordinateCount: 53, waypointCount: 4 }
