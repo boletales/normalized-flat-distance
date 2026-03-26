@@ -8,8 +8,8 @@
     "build": "tsc",
     "test": "jest",
     "lint": "tsc --noEmit",
-    "pilot": "vite --config pilot-ui/vite.config.ts",
-    "pilot:build": "vite build --config pilot-ui/vite.config.ts"
+    "ui": "vite --config ui/vite.config.ts",
+    "ui:build": "vite build --config ui/vite.config.ts"
   },
   "repository": {
     "type": "git",

@@ -48,11 +48,11 @@ npm install
 npm test   # テスト実行
 npm run build  # TypeScript コンパイル
 
-# ブラウザ上パイロットツール（OSMルート作成 + 標高/勾配/NFD可視化）
-npm run pilot
+# ブラウザUI（OSMルート作成 + 標高/勾配/NFD可視化）
+npm run ui
 ```
 
-`npm run pilot` 実行後、表示されたローカルURLをブラウザで開くと、以下を確認できます。
+`npm run ui` 実行後、表示されたローカルURLをブラウザで開くと、以下を確認できます。
 
 - OSM地図上でのルート構成
 - DEMタイル取得による各点標高の算出
