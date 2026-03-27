@@ -19,7 +19,7 @@
 
 import { equilibriumPower } from "../physics/power";
 import { computeAssumedSpeeds, DEFAULT_GRADE_BINS } from "./assumed-speed";
-import type { CyclistParams, NfdLut } from "../types";
+import type { CourseSection, CyclistParams, NfdLut } from "../types";
 
 /**
  * Compute the load factor s(n) = P_eq(v, n)⁴ / v for a given speed and grade.
@@ -64,4 +64,57 @@ export function buildNfdLut(
     lut.set(grade, s / s0);
   }
   return lut;
+}
+
+/**
+ * Find the closest grade bin to a given grade value.
+ *
+ * @param grade Grade value in %
+ * @param bins Sorted array of grade bins in %
+ * @returns The closest grade bin value from the array
+ */
+export function findClosestGradeBin(grade: number, bins: number[]): number {
+  if (bins.length === 0) {
+    throw new Error("Grade bins array cannot be empty");
+  }
+  let closest = bins[0];
+  let minDistance = Math.abs(grade - bins[0]);
+  for (const bin of bins) {
+    const distance = Math.abs(grade - bin);
+    if (distance < minDistance) {
+      minDistance = distance;
+      closest = bin;
+    }
+  }
+  return closest;
+}
+
+/**
+ * Compute the total course riding time in seconds.
+ *
+ * @param sections Array of course sections with distance (m) and grade (%)
+ * @param speedsMap Map from grade (%) to assumed speed (m/s)
+ * @returns Total riding time in seconds, or 0 if sections is empty
+ */
+export function computeCourseTime(
+  sections: CourseSection[],
+  speedsMap: Map<number, number>,
+): number {
+  if (sections.length === 0 || speedsMap.size === 0) {
+    return 0;
+  }
+
+  const grades = Array.from(speedsMap.keys()).sort((a, b) => a - b);
+
+  let totalTimeSeconds = 0;
+  for (const section of sections) {
+    const closestGrade = findClosestGradeBin(section.grade, grades);
+    const speedMs = speedsMap.get(closestGrade) ?? 0;
+    if (speedMs > 0) {
+      const timeSeconds = section.distance / speedMs;
+      totalTimeSeconds += timeSeconds;
+    }
+  }
+
+  return totalTimeSeconds;
 }

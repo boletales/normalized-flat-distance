@@ -27,6 +27,8 @@ export {
 export {
   loadFactor,
   buildNfdLut,
+  computeCourseTime,
+  findClosestGradeBin,
 } from "./optimization/lut";
 
 export {

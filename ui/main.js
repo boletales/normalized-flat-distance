@@ -11,6 +11,8 @@ import {
   buildNfdLut,
   computeNfd,
   computeNfdFromWaypoints,
+  computeAssumedSpeeds,
+  computeCourseTime,
   GsiDemTileElevationProvider,
 } from "../src/index";
 
@@ -965,6 +967,17 @@ function getOrBuildLut(params) {
   return lut;
 }
 
+/**
+ * Format seconds into MM:SS format (supports 60+ minutes)
+ * @param {number} seconds
+ * @returns {string} formatted as "MM:SS" or "MMM:SS" etc.
+ */
+function formatTimeMinutesSeconds(seconds) {
+  const totalMinutes = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${totalMinutes}:${secs.toString().padStart(2, "0")}`;
+}
+
 function buildSectionsFromProfile(profile, maxAbsGrade = FIXED_MAX_ABS_GRADE) {
   const sections = [];
   for (let i = 1; i < profile.length; i += 1) {
@@ -1004,8 +1017,17 @@ function buildNfdSummaryLines(profile, cyclistParams, defaultNfdKm) {
       : (sections.length > 0
         ? computeNfd(sections, getOrBuildLut({ ...cyclistParams, flatPower: p0 })) / 1000
         : defaultNfdKm);
+
+    // Compute course time for this P_0 value
+    let timeString = "計算不可";
+    if (sections.length > 0) {
+      const speedsMap = computeAssumedSpeeds({ ...cyclistParams, flatPower: p0 });
+      const courseTimeSeconds = computeCourseTime(sections, speedsMap);
+      timeString = formatTimeMinutesSeconds(courseTimeSeconds);
+    }
+
     const label = isCustom ? `NFD (P_0=${p0.toFixed(1)}W, custom)` : `NFD (P_0=${p0}W)`;
-    return `${label}: ${nfdKm.toFixed(2)} km`;
+    return `${label}: ${nfdKm.toFixed(2)} km / 時間: ${timeString}`;
   });
 }
 
