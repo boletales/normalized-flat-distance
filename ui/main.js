@@ -9,10 +9,12 @@ import {
   BIKE_TYPE_PRESETS,
   CYCLIST_PRESETS,
   buildNfdLut,
+  buildNfdLutWithStats,
   computeNfd,
   computeNfdFromWaypoints,
   computeAssumedSpeeds,
   computeCourseTime,
+  computeEstimatedNp,
   GsiDemTileElevationProvider,
 } from "../src/index";
 
@@ -53,6 +55,9 @@ const tileProvider = new GsiDemTileElevationProvider({
 /** @type {Map<string, Map<number, number>>} */
 const lutCache = new Map();
 
+/** @type {Map<string, import("../src/types").NfdLutWithStats>} */
+const lutStatsCache = new Map();
+
 const map = L.map("map", {
   preferCanvas: true,
 }).setView([35.68, 139.76], 12);
@@ -81,7 +86,7 @@ const POLYLINE_DRAG_MOVE_THRESHOLD_METERS = 8;
 const DOM_DRAG_MOVE_THRESHOLD_PX = 6;
 const CLICK_SUPPRESS_WINDOW_MS = 220;
 const CLICK_SUPPRESS_RADIUS_PX = 18;
-const ENABLE_ROUTE_DEBUG_LOG = true;
+const ENABLE_ROUTE_DEBUG_LOG = false;
 const DEFAULT_CYCLIST_PARAMS = CYCLIST_PRESETS.intermediate;
 
 let suppressNextMapClick = false;
@@ -968,6 +973,22 @@ function getOrBuildLut(params) {
 }
 
 /**
+ * Get or build comprehensive LUT (NFD + speedsMap) with caching.
+ * @param {import("../src/types").CyclistParams} params
+ * @returns {import("../src/types").NfdLutWithStats}
+ */
+function getOrBuildLutWithStats(params) {
+  const key = buildLutCacheKey(params);
+  // Try to retrieve cached full stats
+  const existing = lutStatsCache.get(key);
+  if (existing) return existing;
+  
+  const lutStats = buildNfdLutWithStats(params);
+  lutStatsCache.set(key, lutStats);
+  return lutStats;
+}
+
+/**
  * Format seconds into MM:SS format (supports 60+ minutes)
  * @param {number} seconds
  * @returns {string} formatted as "MM:SS" or "MMM:SS" etc.
@@ -976,6 +997,15 @@ function formatTimeMinutesSeconds(seconds) {
   const totalMinutes = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${totalMinutes}:${secs.toString().padStart(2, "0")}`;
+}
+
+/**
+ * Format power value as integer watts.
+ * @param {number} watts
+ * @returns {string}
+ */
+function formatPowerWatts(watts) {
+  return `${Math.round(watts)} W`;
 }
 
 function buildSectionsFromProfile(profile, maxAbsGrade = FIXED_MAX_ABS_GRADE) {
@@ -1010,24 +1040,27 @@ function buildNfdSummaryLines(profile, cyclistParams, defaultNfdKm) {
 
   return powersToShow.map((p0) => {
     const isCustom = !standardPowers.includes(p0);
-    const nfdKm = isCustom
-      ? (sections.length > 0
-        ? computeNfd(sections, getOrBuildLut({ ...cyclistParams, flatPower: p0 })) / 1000
-        : defaultNfdKm)
-      : (sections.length > 0
-        ? computeNfd(sections, getOrBuildLut({ ...cyclistParams, flatPower: p0 })) / 1000
-        : defaultNfdKm);
+    const paramsForPower = { ...cyclistParams, flatPower: p0 };
+    
+    // Get comprehensive LUT (NFD + speedsMap) in one call
+    const { nfdLut, speedsMap } = getOrBuildLutWithStats(paramsForPower);
+    
+    const nfdKm = sections.length > 0
+      ? computeNfd(sections, nfdLut) / 1000
+      : defaultNfdKm;
 
-    // Compute course time for this P_0 value
+    // Compute course time and NP using the same speedsMap
     let timeString = "計算不可";
+    let npString = "計算不可";
     if (sections.length > 0) {
-      const speedsMap = computeAssumedSpeeds({ ...cyclistParams, flatPower: p0 });
       const courseTimeSeconds = computeCourseTime(sections, speedsMap);
       timeString = formatTimeMinutesSeconds(courseTimeSeconds);
+      const estimatedNp = computeEstimatedNp(sections, speedsMap, paramsForPower);
+      npString = formatPowerWatts(estimatedNp);
     }
 
-    const label = isCustom ? `NFD (P_0=${p0.toFixed(1)}W, custom)` : `NFD (P_0=${p0}W)`;
-    return `${label}: ${nfdKm.toFixed(2)} km / 時間: ${timeString}`;
+    const label = `P_0=${p0.toFixed(0)}W`;
+    return `${label} NFD: ${nfdKm.toFixed(2)} km / 時間: ${timeString} / L4ノルム出力: ${npString}`;
   });
 }
 
@@ -1336,7 +1369,6 @@ analyzeButton.addEventListener("click", async () => {
       `実距離: ${(actualDistanceMeters / 1000).toFixed(2)} km`,
       `獲得標高: ${elevationGainMeters.toFixed(0)} m`,
       ...nfdLines,
-      `NFD/実距離: ${(actualDistanceMeters > 0 ? result.nfdMeters / actualDistanceMeters : 0).toFixed(3)}`,
       `内挿点(トンネル/橋推定): ${interpolationMarkedCount.toLocaleString()} 点`,
       `タイルキャッシュ: ${tileProvider.size.toLocaleString()} 枚`,
     ].join("<br>");

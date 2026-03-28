@@ -625,21 +625,19 @@ export function parseGsiDemTextTile(text: string): DemTile {
   const values = new Float64Array(DEM_TILE_SIZE * DEM_TILE_SIZE);
   values.fill(Number.NaN);
 
-  const rows = text.split(/\r?\n/).filter((row) => row.length > 0);
-  const maxY = Math.min(rows.length, DEM_TILE_SIZE);
+  const rows = text.split("\n").filter((row) => row.length > 0);
 
-  for (let y = 0; y < maxY; y += 1) {
+  for (let y = 0; y < DEM_TILE_SIZE; y += 1) {
     const row = rows[y];
     if (row === undefined) {
       continue;
     }
 
     const cells = row.split(",");
-    const maxX = Math.min(cells.length, DEM_TILE_SIZE);
 
-    for (let x = 0; x < maxX; x += 1) {
-      const token = cells[x]?.trim();
-      if (token === undefined || token.length === 0 || token.toLowerCase() === "e") {
+    for (let x = 0; x < DEM_TILE_SIZE; x += 1) {
+      const token = cells[x];
+      if (token === undefined || token.toLowerCase() === "e") {
         continue;
       }
 

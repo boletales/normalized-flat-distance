@@ -1,5 +1,6 @@
 import { computeAssumedSpeeds, DEFAULT_GRADE_BINS } from "../optimization/assumed-speed";
-import { buildNfdLut, loadFactor } from "../optimization/lut";
+import { buildNfdLut, computeEstimatedNp, loadFactor } from "../optimization/lut";
+import { equilibriumPower } from "../physics/power";
 import { CYCLIST_PRESETS } from "../presets";
 import { G } from "../types";
 
@@ -103,5 +104,45 @@ describe("loadFactor", () => {
     const sFlat = loadFactor(7, 0, params);
     const sUphill = loadFactor(7, 5, params);
     expect(sUphill).toBeGreaterThan(sFlat);
+  });
+});
+
+describe("computeEstimatedNp", () => {
+  const params = CYCLIST_PRESETS.intermediate;
+
+  test("returns 0 for empty sections", () => {
+    const np = computeEstimatedNp([], new Map<number, number>([[0, 10]]), params);
+    expect(np).toBe(0);
+  });
+
+  test("matches section power for flat-only constant conditions", () => {
+    const sections = [{ distance: 1000, grade: 0 }];
+    const speeds = new Map<number, number>([[0, 10]]);
+
+    const np = computeEstimatedNp(sections, speeds, params);
+    const expectedPower = Math.max(0, equilibriumPower(10, 0, params));
+
+    expect(np).toBeCloseTo(expectedPower, 10);
+  });
+
+  test("uses time-weighted fourth-power mean across sections", () => {
+    const sections = [
+      { distance: 1000, grade: 0 },
+      { distance: 600, grade: 5 },
+    ];
+    const speeds = new Map<number, number>([
+      [0, 10],
+      [5, 6],
+    ]);
+
+    const np = computeEstimatedNp(sections, speeds, params);
+
+    const p1 = Math.max(0, equilibriumPower(10, 0, params));
+    const p2 = Math.max(0, equilibriumPower(6, 5, params));
+    const t1 = 1000 / 10;
+    const t2 = 600 / 6;
+    const expectedNp = Math.pow((Math.pow(p1, 4) * t1 + Math.pow(p2, 4) * t2) / (t1 + t2), 1 / 4);
+
+    expect(np).toBeCloseTo(expectedNp, 10);
   });
 });

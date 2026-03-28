@@ -7,6 +7,7 @@ export type {
   CyclistLevel,
   CourseSection,
   NfdLut,
+  NfdLutWithStats,
 } from "./types";
 
 export { G, AIR_DENSITY } from "./types";
@@ -27,7 +28,9 @@ export {
 export {
   loadFactor,
   buildNfdLut,
+  buildNfdLutWithStats,
   computeCourseTime,
+  computeEstimatedNp,
   findClosestGradeBin,
 } from "./optimization/lut";
 

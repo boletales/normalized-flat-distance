@@ -19,7 +19,7 @@
 
 import { equilibriumPower } from "../physics/power";
 import { computeAssumedSpeeds, DEFAULT_GRADE_BINS } from "./assumed-speed";
-import type { CourseSection, CyclistParams, NfdLut } from "../types";
+import type { CourseSection, CyclistParams, NfdLut, NfdLutWithStats } from "../types";
 
 /**
  * Compute the load factor s(n) = P_eq(v, n)⁴ / v for a given speed and grade.
@@ -77,8 +77,9 @@ export function findClosestGradeBin(grade: number, bins: number[]): number {
   if (bins.length === 0) {
     throw new Error("Grade bins array cannot be empty");
   }
-  let closest = bins[0];
-  let minDistance = Math.abs(grade - bins[0]);
+  const firstBin = bins[0] as number;
+  let closest = firstBin;
+  let minDistance = Math.abs(grade - firstBin);
   for (const bin of bins) {
     const distance = Math.abs(grade - bin);
     if (distance < minDistance) {
@@ -117,4 +118,84 @@ export function computeCourseTime(
   }
 
   return totalTimeSeconds;
+}
+
+/**
+ * Compute estimated normalized power (NP) for a course using a simple
+ * time-weighted 4th-power average without 30-second smoothing.
+ *
+ * NP = (sum(P_i^4 * t_i) / sum(t_i))^(1/4)
+ *
+ * where each section power P_i is computed from equilibriumPower at the
+ * assumed speed for the section grade. Negative powers are clamped to 0.
+ *
+ * @param sections Array of course sections with distance (m) and grade (%)
+ * @param speedsMap Map from grade (%) to assumed speed (m/s)
+ * @param params Cyclist parameters
+ * @returns Estimated NP in watts, or 0 if sections/time is empty
+ */
+export function computeEstimatedNp(
+  sections: CourseSection[],
+  speedsMap: Map<number, number>,
+  params: CyclistParams,
+): number {
+  if (sections.length === 0 || speedsMap.size === 0) {
+    return 0;
+  }
+
+  const grades = Array.from(speedsMap.keys()).sort((a, b) => a - b);
+
+  let totalTimeSeconds = 0;
+  let totalPower4Time = 0;
+
+  for (const section of sections) {
+    const closestGrade = findClosestGradeBin(section.grade, grades);
+    const speedMs = speedsMap.get(closestGrade) ?? 0;
+    if (speedMs <= 0) {
+      continue;
+    }
+
+    const timeSeconds = section.distance / speedMs;
+    const sectionPower = Math.max(0, equilibriumPower(speedMs, section.grade, params));
+    totalTimeSeconds += timeSeconds;
+    totalPower4Time += Math.pow(sectionPower, 4) * timeSeconds;
+  }
+
+  if (totalTimeSeconds <= 0) {
+    return 0;
+  }
+
+  return Math.pow(totalPower4Time / totalTimeSeconds, 1 / 4);
+}
+
+/**
+ * Build the comprehensive NFD LUT with statistics.
+ *
+ * This function combines the NFD coefficient LUT and the assumed speed map
+ * into a single data structure, avoiding redundant recalculation of speeds.
+ *
+ * @param params Cyclist parameters
+ * @param grades Grade bins in percent (defaults to -15..15 in 0.1% steps)
+ * @returns Comprehensive LUT containing both NFD coefficients and speed map
+ */
+export function buildNfdLutWithStats(
+  params: CyclistParams,
+  grades: number[] = DEFAULT_GRADE_BINS,
+): NfdLutWithStats {
+  const speedsMap = computeAssumedSpeeds(params, grades);
+
+  // s(0): load factor at 0% gradient
+  const v0 = speedsMap.get(0);
+  if (v0 === undefined) {
+    throw new Error("Standard course distribution must include 0% grade");
+  }
+  const s0 = loadFactor(v0, 0, params);
+
+  const nfdLut: NfdLut = new Map();
+  for (const [grade, v] of speedsMap.entries()) {
+    const s = loadFactor(v, grade, params);
+    nfdLut.set(grade, s / s0);
+  }
+
+  return { nfdLut, speedsMap };
 }

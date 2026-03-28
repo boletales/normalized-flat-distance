@@ -46,3 +46,17 @@ export interface CourseSection {
  * A look-up table mapping grade (%) to NFD coefficient.
  */
 export type NfdLut = Map<number, number>;
+
+/**
+ * Comprehensive LUT containing NFD coefficients and associated statistics.
+ *
+ * This structure bundles the NFD LUT with the assumed speed map used to derive
+ * it, allowing efficient computation of course statistics (time, power, etc.)
+ * without redundant recalculation of the speed map.
+ */
+export interface NfdLutWithStats {
+  /** NFD coefficient LUT: grade (%) → NFD coefficient (dimensionless) */
+  nfdLut: NfdLut;
+  /** Assumed speed LUT: grade (%) → speed (m/s) for the given P_0 */
+  speedsMap: Map<number, number>;
+}
