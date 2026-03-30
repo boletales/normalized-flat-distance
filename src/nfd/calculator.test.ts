@@ -25,6 +25,26 @@ describe("interpolateCoefficient", () => {
     expect(interpolateCoefficient(-10, lut)).toBe(0.5);
     expect(interpolateCoefficient(10, lut)).toBe(2.0);
   });
+
+  test("uses arithmetic-grid fast path for default LUT bins", () => {
+    const fullLut = buildNfdLut(CYCLIST_PRESETS.intermediate);
+    const c12 = interpolateCoefficient(1.2, fullLut);
+    const c13 = interpolateCoefficient(1.3, fullLut);
+    const c125 = interpolateCoefficient(1.25, fullLut);
+
+    expect(c125).toBeGreaterThanOrEqual(Math.min(c12, c13));
+    expect(c125).toBeLessThanOrEqual(Math.max(c12, c13));
+  });
+
+  test("keeps fallback behavior for non-arithmetic key spacing", () => {
+    const sparse = new Map<number, number>([
+      [-6, 0.4],
+      [-2, 0.8],
+      [5, 2.2],
+    ]);
+    const c = interpolateCoefficient(1.5, sparse);
+    expect(c).toBeCloseTo(1.5, 10);
+  });
 });
 
 describe("computeNfd", () => {

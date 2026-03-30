@@ -6,7 +6,7 @@
 
 ## 2026-03-18: 初期実装
 
-### 実施内容
+### 実施サマリ
 
 TypeScript プロジェクトとして `normalized-flat-distance` の初期実装を行った。
 
@@ -101,3 +101,50 @@ Coggan の NP モデルはサイクリストが実際に出力するペダルパ
   - 更新時の運用ルール（要件変更時・履歴追記時・構成変更時）を定義
 - 更新: `README.md`
   - ドキュメント一覧に上記ファイルを追加
+
+---
+
+## 2026-03-30: LUT参照経路の最適化とドキュメント更新
+
+### 実施内容
+
+勾配LUTの参照・補間を等差ビン前提で高速化し、UI側の係数参照責務をコア関数へ統一した。
+
+1. `src/optimization/assumed-speed.ts`
+   - `validateArithmeticGradeBins()` を追加。
+   - 勾配ビンが「有限値」「厳密昇順」「等差数列」であることを検証。
+   - `computeAssumedSpeeds()` の先頭で検証を実行。
+
+2. `src/nfd/calculator.ts`
+   - `interpolateCoefficient()` を改修。
+   - LUTごとにキーグリッドを解析してキャッシュし、等差キー時は添字計算で補間（O(1)）。
+   - 非等差キーは互換性のため走査ベースへフォールバック。
+
+3. `src/optimization/lut.ts`
+   - `findClosestGradeBin()` を改修。
+   - 等差ビン時は丸めインデックスで最近傍ビンを求める（O(1)）。
+   - `computeCourseTime()` / `computeEstimatedNp()` で解決器をループ外で再利用。
+
+4. `ui/grade-coeff.js`
+   - 係数取得を `lut.get(grade)` から `interpolateCoefficient(grade, lut)` へ変更。
+   - UI側に補間ロジックを持たず、補間仕様をコアへ一元化。
+
+5. テスト追加
+   - `src/optimization/optimization.test.ts`:
+     - 等差ビン検証関数の正常系・異常系
+     - `findClosestGradeBin()` の等差経路/フォールバック経路
+   - `src/nfd/calculator.test.ts`:
+     - 等差グリッド高速経路の回帰
+     - 非等差キーでのフォールバック回帰
+
+### 検証結果
+
+- `npx jest src/nfd/calculator.test.ts src/optimization/optimization.test.ts --runInBand` は通過。
+- `npm run build` は成功。
+- `npm test -- --runInBand` は `src/course-gradient/analyzer.test.ts` 実行中の長時間化により完走確認が未了。
+
+### 変更理由
+
+- これまでの補間処理は呼び出しごとにキー整列と走査を伴い、コース点数が多い場合のボトルネックになっていた。
+- 既定ビンは `-30.0..30.0` の `0.1` 刻みで本質的に等差であるため、この前提を実装へ明示することで計算量を改善できる。
+- UI側がLUT内部の離散キー前提に依存すると責務が分散するため、補間ロジックをコアへ寄せて保守性を上げる。

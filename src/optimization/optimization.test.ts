@@ -1,5 +1,14 @@
-import { computeAssumedSpeeds, DEFAULT_GRADE_BINS } from "../optimization/assumed-speed";
-import { buildNfdLut, computeEstimatedNp, loadFactor } from "../optimization/lut";
+import {
+  computeAssumedSpeeds,
+  DEFAULT_GRADE_BINS,
+  validateArithmeticGradeBins,
+} from "../optimization/assumed-speed";
+import {
+  buildNfdLut,
+  computeEstimatedNp,
+  findClosestGradeBin,
+  loadFactor,
+} from "../optimization/lut";
 import { equilibriumPower } from "../physics/power";
 import { CYCLIST_PRESETS } from "../presets";
 import { G } from "../types";
@@ -63,6 +72,54 @@ describe("computeAssumedSpeeds", () => {
         expect(rel).toBeLessThan(1e-3);
       }
     }
+  });
+
+  test("throws when grade bins are not arithmetic progression", () => {
+    expect(() => computeAssumedSpeeds(params, [-5, -4, -2, 0])).toThrow(
+      "Grade bins must form an arithmetic progression",
+    );
+  });
+
+  test("throws when grade bins are not strictly increasing", () => {
+    expect(() => computeAssumedSpeeds(params, [-1, 0, 0, 1])).toThrow(
+      "Grade bins must be strictly increasing",
+    );
+  });
+});
+
+describe("validateArithmeticGradeBins", () => {
+  test("accepts default bins", () => {
+    expect(() => validateArithmeticGradeBins(DEFAULT_GRADE_BINS)).not.toThrow();
+  });
+
+  test("accepts single-bin array", () => {
+    expect(() => validateArithmeticGradeBins([0])).not.toThrow();
+  });
+
+  test("rejects empty array", () => {
+    expect(() => validateArithmeticGradeBins([])).toThrow("Grade bins array cannot be empty");
+  });
+
+  test("rejects non-finite values", () => {
+    expect(() => validateArithmeticGradeBins([-1, Number.NaN, 1])).toThrow(
+      "Grade bins must contain only finite numbers",
+    );
+  });
+});
+
+describe("findClosestGradeBin", () => {
+  test("uses rounded index for arithmetic bins", () => {
+    const bins = [-1, 0, 1, 2, 3];
+    expect(findClosestGradeBin(0.49, bins)).toBe(0);
+    expect(findClosestGradeBin(0.51, bins)).toBe(1);
+    expect(findClosestGradeBin(-10, bins)).toBe(-1);
+    expect(findClosestGradeBin(10, bins)).toBe(3);
+  });
+
+  test("falls back to scan for non-arithmetic bins", () => {
+    const bins = [-7, -3, 2, 9];
+    expect(findClosestGradeBin(1, bins)).toBe(2);
+    expect(findClosestGradeBin(-4, bins)).toBe(-3);
   });
 });
 

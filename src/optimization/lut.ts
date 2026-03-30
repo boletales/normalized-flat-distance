@@ -21,6 +21,63 @@ import { equilibriumPower } from "../physics/power";
 import { computeAssumedSpeeds, DEFAULT_GRADE_BINS } from "./assumed-speed";
 import type { CourseSection, CyclistParams, NfdLut, NfdLutWithStats } from "../types";
 
+const GRADE_BIN_EPSILON = 1e-9;
+
+function tryCreateArithmeticResolver(bins: number[]): ((grade: number) => number) | undefined {
+  if (bins.length < 2) {
+    return undefined;
+  }
+
+  const first = bins[0] as number;
+  const second = bins[1] as number;
+  const step = second - first;
+  if (!(step > 0)) {
+    return undefined;
+  }
+
+  for (let i = 2; i < bins.length; i += 1) {
+    const prev = bins[i - 1] as number;
+    const current = bins[i] as number;
+    const delta = current - prev;
+    if (!(delta > 0) || Math.abs(delta - step) > GRADE_BIN_EPSILON) {
+      return undefined;
+    }
+  }
+
+  const maxIndex = bins.length - 1;
+  return (grade: number): number => {
+    const ratio = (grade - first) / step;
+    const rounded = Math.round(ratio);
+    const idx = Math.max(0, Math.min(maxIndex, rounded));
+    return bins[idx] as number;
+  };
+}
+
+function createGradeBinResolver(bins: number[]): (grade: number) => number {
+  if (bins.length === 0) {
+    throw new Error("Grade bins array cannot be empty");
+  }
+
+  const arithmeticResolver = tryCreateArithmeticResolver(bins);
+  if (arithmeticResolver) {
+    return arithmeticResolver;
+  }
+
+  const firstBin = bins[0] as number;
+  return (grade: number): number => {
+    let closest = firstBin;
+    let minDistance = Math.abs(grade - firstBin);
+    for (const bin of bins) {
+      const distance = Math.abs(grade - bin);
+      if (distance < minDistance) {
+        minDistance = distance;
+        closest = bin;
+      }
+    }
+    return closest;
+  };
+}
+
 /**
  * Compute the load factor s(n) = P_eq(v, n)⁴ / v for a given speed and grade.
  *
@@ -74,20 +131,8 @@ export function buildNfdLut(
  * @returns The closest grade bin value from the array
  */
 export function findClosestGradeBin(grade: number, bins: number[]): number {
-  if (bins.length === 0) {
-    throw new Error("Grade bins array cannot be empty");
-  }
-  const firstBin = bins[0] as number;
-  let closest = firstBin;
-  let minDistance = Math.abs(grade - firstBin);
-  for (const bin of bins) {
-    const distance = Math.abs(grade - bin);
-    if (distance < minDistance) {
-      minDistance = distance;
-      closest = bin;
-    }
-  }
-  return closest;
+  const resolveClosest = createGradeBinResolver(bins);
+  return resolveClosest(grade);
 }
 
 /**
@@ -106,10 +151,11 @@ export function computeCourseTime(
   }
 
   const grades = Array.from(speedsMap.keys()).sort((a, b) => a - b);
+  const resolveClosest = createGradeBinResolver(grades);
 
   let totalTimeSeconds = 0;
   for (const section of sections) {
-    const closestGrade = findClosestGradeBin(section.grade, grades);
+    const closestGrade = resolveClosest(section.grade);
     const speedMs = speedsMap.get(closestGrade) ?? 0;
     if (speedMs > 0) {
       const timeSeconds = section.distance / speedMs;
@@ -144,12 +190,13 @@ export function computeEstimatedNp(
   }
 
   const grades = Array.from(speedsMap.keys()).sort((a, b) => a - b);
+  const resolveClosest = createGradeBinResolver(grades);
 
   let totalTimeSeconds = 0;
   let totalPower4Time = 0;
 
   for (const section of sections) {
-    const closestGrade = findClosestGradeBin(section.grade, grades);
+    const closestGrade = resolveClosest(section.grade);
     const speedMs = speedsMap.get(closestGrade) ?? 0;
     if (speedMs <= 0) {
       continue;

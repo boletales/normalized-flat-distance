@@ -23,6 +23,60 @@
 
 import type { CourseSection, NfdLut } from "../types";
 
+const LUT_GRADE_EPSILON = 1e-9;
+
+interface LutGradeGrid {
+  keys: number[];
+  min: number;
+  max: number;
+  step: number;
+}
+
+const lutGradeGridCache = new WeakMap<NfdLut, LutGradeGrid>();
+
+function tryBuildArithmeticGrid(lut: NfdLut): LutGradeGrid | undefined {
+  const keys = Array.from(lut.keys()).sort((a, b) => a - b);
+  if (keys.length < 2) {
+    return undefined;
+  }
+
+  const min = keys[0] as number;
+  const second = keys[1] as number;
+  const step = second - min;
+  if (!(step > 0)) {
+    return undefined;
+  }
+
+  for (let i = 2; i < keys.length; i += 1) {
+    const prev = keys[i - 1] as number;
+    const current = keys[i] as number;
+    const delta = current - prev;
+    if (!(delta > 0) || Math.abs(delta - step) > LUT_GRADE_EPSILON) {
+      return undefined;
+    }
+  }
+
+  return {
+    keys,
+    min,
+    max: keys[keys.length - 1] as number,
+    step,
+  };
+}
+
+function getLutGradeGrid(lut: NfdLut): LutGradeGrid | undefined {
+  const cached = lutGradeGridCache.get(lut);
+  if (cached) {
+    return cached;
+  }
+
+  const grid = tryBuildArithmeticGrid(lut);
+  if (grid) {
+    lutGradeGridCache.set(lut, grid);
+  }
+  return grid;
+}
+
 /**
  * Interpolate the NFD coefficient for a given grade from the LUT.
  * Linear interpolation between the two nearest grade bins.
@@ -32,10 +86,40 @@ import type { CourseSection, NfdLut } from "../types";
  * @returns Interpolated NFD coefficient
  */
 export function interpolateCoefficient(grade: number, lut: NfdLut): number {
-  const grades = Array.from(lut.keys()).sort((a, b) => a - b);
+  if (lut.size === 0) {
+    return 1;
+  }
 
   // Exact match
   if (lut.has(grade)) return lut.get(grade) as number;
+
+  const grid = getLutGradeGrid(lut);
+  if (grid) {
+    const { keys, min, max, step } = grid;
+    if (grade <= min) {
+      return lut.get(keys[0] as number) ?? 1;
+    }
+    if (grade >= max) {
+      return lut.get(keys[keys.length - 1] as number) ?? 1;
+    }
+
+    const ratio = (grade - min) / step;
+    const loIndex = Math.floor(ratio + LUT_GRADE_EPSILON);
+    const hiIndex = Math.min(keys.length - 1, loIndex + 1);
+    const loKey = keys[loIndex] as number;
+    const hiKey = keys[hiIndex] as number;
+
+    if (loKey === hiKey) {
+      return lut.get(loKey) ?? 1;
+    }
+
+    const cLo = lut.get(loKey) ?? 1;
+    const cHi = lut.get(hiKey) ?? cLo;
+    const t = (grade - loKey) / (hiKey - loKey);
+    return cLo + t * (cHi - cLo);
+  }
+
+  const grades = Array.from(lut.keys()).sort((a, b) => a - b);
 
   // Below minimum
   const first = grades[0];
@@ -56,7 +140,10 @@ export function interpolateCoefficient(grade: number, lut: NfdLut): number {
   let hi = last;
   for (const g of grades) {
     if (g <= grade) lo = g;
-    if (g >= grade && g < hi) hi = g;
+    if (g >= grade) {
+      hi = g;
+      break;
+    }
   }
 
   const cLo = lut.get(lo) as number;

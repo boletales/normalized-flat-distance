@@ -1060,7 +1060,7 @@ function buildNfdSummaryLines(profile, cyclistParams, defaultNfdKm) {
     }
 
     const label = `P_0=${p0.toFixed(0)}W`;
-    return `${label} NFD: ${nfdKm.toFixed(2)} km / 時間: ${timeString} / L4ノルム出力: ${npString}`;
+    return `${label} NFD: ${nfdKm.toFixed(2)} km / 時間: ${timeString} / ならし出力: ${npString}`;
   });
 }
 

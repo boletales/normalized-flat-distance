@@ -1,4 +1,10 @@
-import { BIKE_TYPE_PRESETS, CYCLIST_PRESETS, buildNfdLut, computeAssumedSpeeds } from "../src/index";
+import {
+  BIKE_TYPE_PRESETS,
+  CYCLIST_PRESETS,
+  buildNfdLut,
+  computeAssumedSpeeds,
+  interpolateCoefficient,
+} from "../src/index";
 import { equilibriumPower } from "../src/physics/power";
 
 const bikeTypeSelect = document.getElementById("bikeTypeSelect");
@@ -141,7 +147,7 @@ function generate() {
       grade,
       speedKmh: v * 3.6,
       powerW: pEff,
-      coeff: lut.get(grade) ?? 0,
+      coeff: interpolateCoefficient(grade, lut),
     };
   });
 

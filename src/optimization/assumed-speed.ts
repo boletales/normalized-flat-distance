@@ -34,6 +34,53 @@ export const DEFAULT_GRADE_BINS: number[] = (() => {
 
 /** Internal upper bound (m/s) for numerical root search. */
 const SPEED_SEARCH_MAX = 200;
+const GRADE_BIN_EPSILON = 1e-9;
+
+/**
+ * Validate that grade bins are finite, strictly increasing, and arithmetic.
+ *
+ * @param grades Grade bins in percent
+ */
+export function validateArithmeticGradeBins(grades: number[]): void {
+  if (grades.length === 0) {
+    throw new Error("Grade bins array cannot be empty");
+  }
+
+  for (const grade of grades) {
+    if (!Number.isFinite(grade)) {
+      throw new Error("Grade bins must contain only finite numbers");
+    }
+  }
+
+  if (grades.length === 1) {
+    return;
+  }
+
+  const first = grades[0] as number;
+  const second = grades[1] as number;
+  const step = second - first;
+
+  if (!(step > 0)) {
+    throw new Error("Grade bins must be strictly increasing");
+  }
+
+  for (let i = 1; i < grades.length; i += 1) {
+    const prev = grades[i - 1] as number;
+    const current = grades[i] as number;
+    if (!(current > prev)) {
+      throw new Error("Grade bins must be strictly increasing");
+    }
+  }
+
+  for (let i = 2; i < grades.length; i += 1) {
+    const prev = grades[i - 1] as number;
+    const current = grades[i] as number;
+    const delta = current - prev;
+    if (Math.abs(delta - step) > GRADE_BIN_EPSILON) {
+      throw new Error("Grade bins must form an arithmetic progression");
+    }
+  }
+}
 
 function aerodynamicCoeff(params: CyclistParams): number {
   return (0.5 * params.rho * params.CdA) / params.eta;
@@ -160,6 +207,8 @@ export function computeAssumedSpeeds(
   params: CyclistParams,
   grades: number[] = DEFAULT_GRADE_BINS,
 ): Map<number, number> {
+  validateArithmeticGradeBins(grades);
+
   const a = aerodynamicCoeff(params);
   const b0 = linearCoeff(0, params);
   const v0 = solveFlatSpeedForPower(params);

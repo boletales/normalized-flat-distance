@@ -2,19 +2,25 @@
 
 ## プロジェクト構成
 
-```
+```text
 src/
 ├── types.ts                         共通型定義・物理定数
 ├── presets.ts                       想定サイクリストのプリセットパラメータ
 ├── index.ts                         パブリックAPI（re-export）
+├── course-gradient/
+│   └── analyzer.ts                  ウェイポイントから標高・勾配プロファイルを構築
 ├── physics/
 │   └── power.ts                     自転車走行の出力モデル
 ├── optimization/
-│   ├── standard-course.ts           旧方式の残存モジュール（非推奨）
 │   ├── assumed-speed.ts             P_0ベースで勾配ごとの想定速度を求める最適化
-│   └── lut.ts                       NFD係数LUTの生成
+│   ├── lut.ts                       NFD係数LUTの生成と近傍勾配解決
+│   └── smoothing.ts                 標高平滑化ユーティリティ
 └── nfd/
-    └── calculator.ts                NFDの計算
+    └── calculator.ts                係数補間とNFD計算
+
+ui/
+├── main.js                          OSMルート可視化、NFD解析画面
+└── grade-coeff.js                   勾配係数テーブル生成画面
 ```
 
 ---
@@ -54,17 +60,28 @@ src/
 ### `optimization/assumed-speed.ts`
 
 - **`computeAssumedSpeeds(params, grades?)`**：`P_0` と最適化式に基づいて、各勾配の想定速度マップを返す。
+- **`validateArithmeticGradeBins(grades)`**：勾配ビンが有限値・昇順・等差数列であることを検証する。
+- 既定の `DEFAULT_GRADE_BINS` は `-30.0%..+30.0%` を `0.1%` 刻みで離散化した 601 ビン。
 
 ### `optimization/lut.ts`
 
 - **`loadFactor(v, grade, params)`**：負荷係数 `max(0, P_eq)⁴ / v`。
 - **`buildNfdLut(params, grades?)`**：全勾配の想定速度を計算し、s(n)/s(0) の LUT を構築して返す。
+- **`findClosestGradeBin(grade, bins)`**：最近傍勾配ビンを返す。等差ビンではインデックス計算で O(1)、非等差ビンでは走査フォールバック。
+- **`computeCourseTime(sections, speedsMap)`** / **`computeEstimatedNp(sections, speedsMap, params)`**：上記の勾配ビン解決を利用してコース時間・推定NPを算出。
 
 ### `nfd/calculator.ts`
 
-- **`interpolateCoefficient(grade, lut)`**：LUTにない勾配は線形補間（範囲外は末端値に固定）。
+- **`interpolateCoefficient(grade, lut)`**：LUTにない勾配を線形補間（範囲外は末端値に固定）。
+    等差キーLUTでは、キー配列をLUTごとに一度だけ解析・キャッシュし、添字計算で補間する（O(1)）。
+    非等差キーLUTは後方互換のため従来の走査ベースへフォールバックする。
 - **`computeNfd(sections, lut)`**：`Σ distance_i × c(grade_i)` でNFD (m) を返す。
 - **`computeNfdKm(sections, lut)`**：NFD (km) を返す。
+
+### `course-gradient/analyzer.ts`
+
+- **`buildCourseProfileFromWaypoints(...)`**：標高取得・平滑化・等間隔化を行い、解析用プロファイルを構築。
+- **`computeNfdFromWaypoints(...)`**：プロファイル勾配に対して `interpolateCoefficient` を適用し、NFDを計算。
 
 ---
 
@@ -77,6 +94,8 @@ CyclistParams (+ optional grade bins)
     → computeNfd(sections, lut)  : NFD in metres
 ```
 
+UIからの呼び出しでは、勾配に対する係数取得を `interpolateCoefficient` 経由に統一し、UI側で補間ロジックを持たない。
+
 ---
 
 ## テスト
@@ -84,10 +103,11 @@ CyclistParams (+ optional grade bins)
 各モジュールに対応する `.test.ts` ファイルを `src/` 以下に配置：
 
 | テストファイル | 対象 |
-|--------------|------|
+| -------------- | ------ |
 | `src/physics/power.test.ts` | `equilibriumPower`、`speedForPower` |
 | `src/optimization/optimization.test.ts` | `computeAssumedSpeeds`、`buildNfdLut`、`loadFactor` |
 | `src/nfd/calculator.test.ts` | `interpolateCoefficient`、`computeNfd`、`computeNfdKm`、レベル間比較 |
+| `src/course-gradient/analyzer.test.ts` | 標高プロファイル構築、外部標高プロバイダ連携、NFD算出フロー |
 
 `npm test` で Jest を使って実行する。
 
