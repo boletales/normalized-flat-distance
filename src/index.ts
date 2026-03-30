@@ -48,20 +48,19 @@ export type {
   CourseGradientResult,
   NfdFromWaypointsResult,
   CachedElevationProviderOptions,
-  GsiDemTileElevationProviderOptions,
+  GsiDemPngTileElevationProviderOptions,
 } from "./course-gradient/analyzer";
 
 export {
   haversineDistanceMeters,
   smoothElevationsWithSavitzkyGolay,
-  parseGsiDemTextTile,
+  parseGsiDemPngRgbaTile,
   buildCourseProfileFromWaypoints,
   computeNfdFromWaypoints,
   CachedElevationProvider,
   DEFAULT_GSI_ELEVATION_ENDPOINT,
-  DEFAULT_GSI_DEM_TILE_TEMPLATE,
-  DEFAULT_GSI_DEM_TILE_TEMPLATES,
-  GsiDemTileElevationProvider,
+  DEFAULT_GSI_DEM_PNG_TILE_TEMPLATES,
+  GsiDemPngTileElevationProvider,
   GsiElevationProvider,
 } from "./course-gradient/analyzer";
 

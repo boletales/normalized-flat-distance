@@ -15,7 +15,7 @@ import {
   computeAssumedSpeeds,
   computeCourseTime,
   computeEstimatedNp,
-  GsiDemTileElevationProvider,
+  GsiDemPngTileElevationProvider,
 } from "../src/index";
 
 /** @typedef {{lat:number, lon:number}} GeoPoint */
@@ -46,11 +46,13 @@ let latestProfile = [];
 /** @type {Map<string, {segments:Array<{a:GeoPoint,b:GeoPoint}>}>} */
 const tunnelBridgeCache = new Map();
 
-const tileProvider = new GsiDemTileElevationProvider({
+const tileProvider = new GsiDemPngTileElevationProvider({
   zoom: 15,
   maxTiles: 2048,
   cacheTtlMs: 24 * 60 * 60 * 1000,
 });
+
+console.info("[DEM] provider=png");
 
 /** @type {Map<string, Map<number, number>>} */
 const lutCache = new Map();

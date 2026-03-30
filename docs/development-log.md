@@ -148,3 +148,86 @@ Coggan の NP モデルはサイクリストが実際に出力するペダルパ
 - これまでの補間処理は呼び出しごとにキー整列と走査を伴い、コース点数が多い場合のボトルネックになっていた。
 - 既定ビンは `-30.0..30.0` の `0.1` 刻みで本質的に等差であるため、この前提を実装へ明示することで計算量を改善できる。
 - UI側がLUT内部の離散キー前提に依存すると責務が分散するため、補間ロジックをコアへ寄せて保守性を上げる。
+
+---
+
+## 2026-03-30: DEM PNG provider導入と既定化
+
+### 実施内容
+
+地理院標高タイルについて、従来のテキストタイル方式に加えてPNGタイル方式を実装し、UIの既定プロバイダをPNGへ切り替えた。
+
+1. `src/course-gradient/analyzer.ts`
+   - `parseGsiDemPngRgbaTile()` を追加。
+     - 地理院仕様に沿って RGB から標高値を復元（`x = 2^16R + 2^8G + B`, `u=0.01`）。
+     - no-data（`(128,0,0)` および `x = 2^23`）は `NaN` として扱う。
+   - `GsiDemPngTileElevationProvider` を追加。
+     - タイルキャッシュ、in-flight重複排除、テンプレートフォールバック、近傍探索をテキスト版と同等に実装。
+   - `DEFAULT_GSI_DEM_PNG_TILE_TEMPLATES` を追加。
+
+2. `src/index.ts`
+   - PNG関連の型・定数・関数・プロバイダを公開APIへ追加。
+
+3. `ui/main.js`
+   - DEMプロバイダの既定をPNGへ変更。
+   - URLクエリ `?dem=txt` で従来テキスト版へ切替できる互換モードを維持。
+
+4. `src/course-gradient/analyzer.test.ts`
+   - `parseGsiDemPngRgbaTile` の値復元テストを追加。
+   - `GsiDemPngTileElevationProvider` のキャッシュ・フォールバックテストを追加。
+
+### 計測結果（ローカルマイクロベンチ）
+
+同一256x256タイルに対する「JS変換処理のみ」の比較結果は以下。
+
+- text parser: 約 `6.79 ms / tile`
+- png RGBA parser: 約 `0.286 ms / tile`
+
+この計測ではPNG側が約24倍高速であり、ブラウザ上の初回タイル解析時間の短縮が期待できる。
+
+### 検証結果
+
+- `npm run build` は成功。
+- PNG関連の絞り込みテストは通過：
+  - `npm test -- src/course-gradient/analyzer.test.ts -t "parseGsiDemPngRgbaTile|GsiDemPngTileElevationProvider"`
+- 既存の `analyzer.test.ts` 全体には、今回変更と独立した既知の失敗ケースが残存（プロファイル件数期待の不整合）。
+
+### 判断理由
+
+- テキスト版はCSV分解と数値変換の比率が高く、ブラウザ実行時のオーバーヘッドが支配的だった。
+- PNG版は画像デコードをブラウザ実装側へ委譲できるため、JS側の処理を軽量化できる。
+- 既定をPNGにすることで通常利用の体感速度を改善しつつ、`?dem=txt` で回帰比較・切り戻しが可能な運用にした。
+
+---
+
+## 2026-03-30: テキストDEM実装の削除
+
+### 実施内容（削除対象）
+
+PNG版での運用が安定したため、テキストDEM (`*.txt`) の実装をコードベースから削除した。
+
+1. `src/course-gradient/analyzer.ts`
+   - `parseGsiDemTextTile()` を削除。
+   - `GsiDemTileElevationProvider` と関連オプション型・定数を削除。
+   - `GsiElevationProvider` の推奨先を `GsiDemPngTileElevationProvider` に更新。
+
+2. `src/index.ts`
+   - テキストDEM関連の公開APIエクスポートを削除。
+
+3. `ui/main.js`
+   - DEMプロバイダ分岐を削除し、`GsiDemPngTileElevationProvider` 固定へ変更。
+
+4. `src/course-gradient/analyzer.test.ts`
+   - テキストDEMパーサ・プロバイダに関するテストを削除。
+   - PNGパーサ・PNGプロバイダのテストへ整理。
+
+5. `docs/code-overview.md`
+   - テキストDEMの記述と切替説明を削除し、PNG一本化を反映。
+
+### 検証結果（削除後）
+
+- `npm run build` で型エラーなしを確認。
+
+### 判断理由（一本化）
+
+- テキストDEMを残す保守コストより、PNG一本化による実装単純化と性能維持の価値が高いと判断した。

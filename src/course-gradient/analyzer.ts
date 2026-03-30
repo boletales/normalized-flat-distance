@@ -558,6 +558,8 @@ interface DemTileCacheEntry {
   expiresAt: number;
 }
 
+type PngRgbaDecoder = (blob: Blob) => Promise<Uint8ClampedArray>;
+
 const DEM_TILE_SIZE = 256;
 
 function clampInteger(value: number, min: number, max: number): number {
@@ -617,38 +619,107 @@ function findNearestFiniteDemValue(
   return undefined;
 }
 
+const DEM_PNG_EXPONENT_23 = 2 ** 23;
+const DEM_PNG_EXPONENT_24 = 2 ** 24;
+const DEM_PNG_RESOLUTION = 0.01;
+
 /**
- * Parse GSI DEM text tile (.txt) into fixed 256x256 numeric raster.
- * No-data marker "e" is treated as NaN.
+ * Parse a GSI DEM PNG RGBA buffer into fixed 256x256 numeric raster.
+ *
+ * Pixel format follows GSI DEM PNG spec:
+ * - x = 2^16 * R + 2^8 * G + B
+ * - x < 2^23: h = x * 0.01
+ * - x = 2^23: no-data
+ * - x > 2^23: h = (x - 2^24) * 0.01
+ *
+ * No-data marker color (128,0,0) is also treated as NaN.
  */
-export function parseGsiDemTextTile(text: string): DemTile {
+export function parseGsiDemPngRgbaTile(rgba: Uint8ClampedArray): DemTile {
+  const requiredLength = DEM_TILE_SIZE * DEM_TILE_SIZE * 4;
+  if (rgba.length < requiredLength) {
+    throw new Error(`Invalid DEM PNG RGBA length: ${rgba.length}`);
+  }
+
   const values = new Float64Array(DEM_TILE_SIZE * DEM_TILE_SIZE);
   values.fill(Number.NaN);
 
-  const rows = text.split("\n").filter((row) => row.length > 0);
+  for (let i = 0; i < DEM_TILE_SIZE * DEM_TILE_SIZE; i += 1) {
+    const offset = i * 4;
+    const r = rgba[offset] as number;
+    const g = rgba[offset + 1] as number;
+    const b = rgba[offset + 2] as number;
 
-  for (let y = 0; y < DEM_TILE_SIZE; y += 1) {
-    const row = rows[y];
-    if (row === undefined) {
+    if (r === 128 && g === 0 && b === 0) {
       continue;
     }
 
-    const cells = row.split(",");
-
-    for (let x = 0; x < DEM_TILE_SIZE; x += 1) {
-      const token = cells[x];
-      if (token === undefined || token.toLowerCase() === "e") {
-        continue;
-      }
-
-      const parsed = Number(token);
-      if (Number.isFinite(parsed)) {
-        values[y * DEM_TILE_SIZE + x] = parsed;
-      }
+    const x = (r * 65536) + (g * 256) + b;
+    if (x === DEM_PNG_EXPONENT_23) {
+      continue;
     }
+
+    const elevation = x < DEM_PNG_EXPONENT_23
+      ? x * DEM_PNG_RESOLUTION
+      : (x - DEM_PNG_EXPONENT_24) * DEM_PNG_RESOLUTION;
+    values[i] = elevation;
   }
 
   return { values };
+}
+
+async function defaultDecodeDemPngToRgba(blob: Blob): Promise<Uint8ClampedArray> {
+  const globalLike = globalThis as {
+    createImageBitmap?: (image: Blob) => Promise<unknown>;
+    OffscreenCanvas?: new (width: number, height: number) => {
+      getContext: (contextId: string) => {
+        drawImage: (image: unknown, dx: number, dy: number) => void;
+        getImageData: (sx: number, sy: number, sw: number, sh: number) => { data: Uint8ClampedArray };
+      } | null;
+    };
+    document?: {
+      createElement: (tagName: string) => {
+        width: number;
+        height: number;
+        getContext: (contextId: string) => {
+          drawImage: (image: unknown, dx: number, dy: number) => void;
+          getImageData: (sx: number, sy: number, sw: number, sh: number) => { data: Uint8ClampedArray };
+        } | null;
+      };
+    };
+  };
+
+  const createImageBitmapFn = globalLike.createImageBitmap;
+  if (typeof createImageBitmapFn !== "function") {
+    throw new Error("createImageBitmap is not available; provide decodePngRgba option");
+  }
+
+  const bitmap = await createImageBitmapFn(blob);
+
+  const OffscreenCanvasCtor = globalLike.OffscreenCanvas;
+  if (typeof OffscreenCanvasCtor === "function") {
+    const canvas = new OffscreenCanvasCtor(DEM_TILE_SIZE, DEM_TILE_SIZE);
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) {
+      throw new Error("Failed to get 2d context from OffscreenCanvas");
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    return ctx.getImageData(0, 0, DEM_TILE_SIZE, DEM_TILE_SIZE).data;
+  }
+
+  const documentRef = globalLike.document;
+  if (documentRef !== undefined) {
+    const canvas = documentRef.createElement("canvas");
+    canvas.width = DEM_TILE_SIZE;
+    canvas.height = DEM_TILE_SIZE;
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) {
+      throw new Error("Failed to get 2d context from canvas");
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    return ctx.getImageData(0, 0, DEM_TILE_SIZE, DEM_TILE_SIZE).data;
+  }
+
+  throw new Error("No canvas implementation available; provide decodePngRgba option");
 }
 
 /**
@@ -721,64 +792,40 @@ export const DEFAULT_GSI_ELEVATION_ENDPOINT =
   "https://cyberjapandata2.gsi.go.jp/general/dem/scripts/getelevation.php?lon={lon}&lat={lat}&outtype=JSON";
 
 /**
- * Primary DEM text tile template (5m mesh where available).
+ * Recommended DEM PNG tile templates in fallback order.
  */
-export const DEFAULT_GSI_DEM_TILE_TEMPLATE =
-  "https://cyberjapandata.gsi.go.jp/xyz/dem5a/{z}/{x}/{y}.txt";
-
-/**
- * Recommended DEM tile templates in fallback order.
- */
-export const DEFAULT_GSI_DEM_TILE_TEMPLATES = [
-  "https://cyberjapandata.gsi.go.jp/xyz/dem5a/{z}/{x}/{y}.txt",
-  "https://cyberjapandata.gsi.go.jp/xyz/dem5b/{z}/{x}/{y}.txt",
-  "https://cyberjapandata.gsi.go.jp/xyz/dem/{z}/{x}/{y}.txt",
+export const DEFAULT_GSI_DEM_PNG_TILE_TEMPLATES = [
+  "https://cyberjapandata.gsi.go.jp/xyz/dem5a_png/{z}/{x}/{y}.png",
+  "https://cyberjapandata.gsi.go.jp/xyz/dem5b_png/{z}/{x}/{y}.png",
+  "https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png",
 ] as const;
 
-function isGsiDem10Template(template: string): boolean {
-  return template.includes("/dem/{z}/") && !template.includes("/dem5");
+function isGsiDem10PngTemplate(template: string): boolean {
+  return template.includes("/dem_png/{z}/") && !template.includes("/dem5");
 }
 
 /**
- * Options for tile-based GSI DEM provider.
+ * Options for PNG tile-based GSI DEM provider.
  */
-export interface GsiDemTileElevationProviderOptions {
+export interface GsiDemPngTileElevationProviderOptions {
   zoom?: number;
   tileTemplates?: string[];
   cacheTtlMs?: number;
   maxTiles?: number;
   fetchFn?: typeof fetch;
-  /**
-   * Max tile-ring radius used to search a nearby valid elevation when
-   * the target pixel is no-data (e.g. river/water).
-   *
-   * 0 means current tile only, 1 includes 8 surrounding tiles.
-   *
-   * @default 2
-   */
+  decodePngRgba?: PngRgbaDecoder;
   noDataTileSearchRadius?: number;
-  /**
-   * Pixel search radius inside each candidate tile.
-   *
-   * @default 16
-   */
   noDataPixelSearchRadius?: number;
-  /**
-   * Fallback elevation (m) used when DEM has no value (e.g. water area).
-   * Set to `undefined` to throw an error instead.
-   *
-   * @default undefined
-   */
   noDataFallbackElevation?: number;
 }
 
 /**
- * Tile-based elevation provider using GSI DEM text tiles.
+ * Tile-based elevation provider using GSI DEM PNG tiles.
  *
- * This provider is suitable for long routes because requests are done per tile,
- * not per point. Nearby points reuse the same cached tile.
+ * Compared to text DEM, PNG avoids CSV parsing overhead and usually performs
+ * better in browser runtimes.
  */
-export class GsiDemTileElevationProvider implements ElevationProvider {
+export class GsiDemPngTileElevationProvider implements ElevationProvider {
   private readonly zoom: number;
 
   private readonly tileTemplates: string[];
@@ -788,6 +835,8 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
   private readonly maxTiles: number;
 
   private readonly fetchFn: typeof fetch;
+
+  private readonly decodePngRgba: PngRgbaDecoder;
 
   private readonly noDataTileSearchRadius: number;
 
@@ -799,14 +848,15 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
 
   private readonly inFlightTileRequests = new Map<string, Promise<DemTile | null>>();
 
-  constructor(options: GsiDemTileElevationProviderOptions = {}) {
+  constructor(options: GsiDemPngTileElevationProviderOptions = {}) {
     this.zoom = options.zoom ?? 15;
-    this.tileTemplates = options.tileTemplates ?? [...DEFAULT_GSI_DEM_TILE_TEMPLATES];
+    this.tileTemplates = options.tileTemplates ?? [...DEFAULT_GSI_DEM_PNG_TILE_TEMPLATES];
     this.cacheTtlMs = options.cacheTtlMs ?? 24 * 60 * 60 * 1000;
     this.maxTiles = options.maxTiles ?? 1024;
     this.fetchFn = options.fetchFn === undefined
       ? globalThis.fetch.bind(globalThis)
       : options.fetchFn.bind(globalThis);
+    this.decodePngRgba = options.decodePngRgba ?? defaultDecodeDemPngToRgba;
     this.noDataTileSearchRadius = Math.max(0, Math.trunc(options.noDataTileSearchRadius ?? 2));
     this.noDataPixelSearchRadius = Math.max(0, Math.trunc(options.noDataPixelSearchRadius ?? 16));
     this.noDataFallbackElevation = options.noDataFallbackElevation;
@@ -827,7 +877,6 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
       tile: DemTile;
     }> = [];
 
-    // Phase 1: Prefer exact pixel match, but first try all DEM templates.
     for (const template of this.tileTemplates) {
       const templateZoom = this.resolveTemplateZoom(template);
       const tileXFloat = lonToTileX(point.lon, templateZoom);
@@ -863,8 +912,6 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
       }
     }
 
-    // Phase 2: If exact match is unavailable across templates,
-    // allow nearest finite value search in the current tile.
     for (const { tile, pixelX, pixelY } of availableTiles) {
       const value = findNearestFiniteDemValue(tile, pixelX, pixelY);
       if (value !== undefined) {
@@ -872,7 +919,6 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
       }
     }
 
-    // Phase 3: Expand search to nearby tiles.
     for (const {
       template,
       templateZoom,
@@ -1005,7 +1051,6 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
     tileY: number,
     now: number,
   ): Promise<DemTile | null> {
-
     const url = template
       .replace("{z}", String(zoom))
       .replace("{x}", String(tileX))
@@ -1013,7 +1058,7 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
 
     const response = await this.fetchFn(url, {
       headers: {
-        Accept: "text/plain",
+        Accept: "image/png",
       },
     });
 
@@ -1022,14 +1067,15 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
       return null;
     }
 
-    const text = await response.text();
-    const tile = parseGsiDemTextTile(text);
+    const blob = await response.blob();
+    const rgba = await this.decodePngRgba(blob);
+    const tile = parseGsiDemPngRgbaTile(rgba);
     this.putTileCache(cacheKey, tile, now);
     return tile;
   }
 
   private resolveTemplateZoom(template: string): number {
-    if (isGsiDem10Template(template)) {
+    if (isGsiDem10PngTemplate(template)) {
       return Math.max(0, this.zoom - 1);
     }
     return this.zoom;
@@ -1053,7 +1099,7 @@ export class GsiDemTileElevationProvider implements ElevationProvider {
 /**
  * Elevation provider backed by GSI's public elevation API.
  *
- * @deprecated Prefer `GsiDemTileElevationProvider` for route analysis, because
+ * @deprecated Prefer `GsiDemPngTileElevationProvider` for route analysis, because
  * it dramatically reduces request count by reusing tile data.
  */
 export class GsiElevationProvider implements ElevationProvider {

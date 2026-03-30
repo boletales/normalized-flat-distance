@@ -82,6 +82,10 @@ ui/
 
 - **`buildCourseProfileFromWaypoints(...)`**：標高取得・平滑化・等間隔化を行い、解析用プロファイルを構築。
 - **`computeNfdFromWaypoints(...)`**：プロファイル勾配に対して `interpolateCoefficient` を適用し、NFDを計算。
+- **`GsiDemPngTileElevationProvider`**：地理院DEM PNGタイル（`*.png`）を読み込む標高プロバイダ。
+- **`GsiDemPngTileElevationProvider` の実装注記**：ブラウザ実行時は `createImageBitmap` + Canvas 経由でRGBAを取得し、標高へ変換する。
+- **`GsiDemPngTileElevationProvider` の変換式**：地理院仕様に準拠（`x = 2^16R + 2^8G + B`, `u = 0.01m`）。
+- **`parseGsiDemPngRgbaTile(...)`**：PNGタイルのRGBAデータを 256x256 の標高格子へ変換。
 
 ---
 
@@ -95,6 +99,8 @@ CyclistParams (+ optional grade bins)
 ```
 
 UIからの呼び出しでは、勾配に対する係数取得を `interpolateCoefficient` 経由に統一し、UI側で補間ロジックを持たない。
+
+標高タイル取得は PNG provider に一本化している。
 
 ---
 
